@@ -22,6 +22,16 @@ const routes = [
         path: 'mapping-pmk',
         name: 'MappingPMK',
         component: () => import('../views/MappingPMKView.vue')
+      },
+      {
+        path: 'realisasi',
+        name: 'Realisasi',
+        component: () => import('../views/RealisasiView.vue')
+      },
+      {
+        path: 'paket-anggaran',
+        name: 'PaketAnggaran',
+        component: () => import('../views/PaketAnggaranView.vue')
       }
     ]
   }

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { HomeFilled, DataAnalysis } from '@element-plus/icons-vue'
+import { HomeFilled, DataAnalysis, TrendCharts, Folder } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -38,8 +38,14 @@ function logout() {
       </div>
     </el-header>
 
-    <el-container>
-      <el-aside width="200px" style="background: #fff; border-right: 1px solid #e4e7ed; min-height: calc(100vh - 60px);">
+    <el-container style="height: calc(100vh - 60px); overflow: hidden;">
+      <el-aside width="200px" style="
+        background: #fff;
+        border-right: 1px solid #e4e7ed;
+        height: 100%;
+        overflow-y: auto;
+        flex-shrink: 0;
+      ">
         <el-menu
           :default-active="activeMenu"
           router
@@ -53,10 +59,18 @@ function logout() {
             <el-icon><DataAnalysis /></el-icon>
             <span>Mapping PMK</span>
           </el-menu-item>
+          <el-menu-item index="/realisasi">
+            <el-icon><TrendCharts /></el-icon>
+            <span>Realisasi</span>
+          </el-menu-item>
+          <el-menu-item index="/paket-anggaran">
+            <el-icon><Folder /></el-icon>
+            <span>Paket Anggaran</span>
+          </el-menu-item>
         </el-menu>
       </el-aside>
 
-      <el-main style="background: #f0f2f5; padding: 24px 28px;">
+      <el-main style="background: #f0f2f5; padding: 24px 28px; overflow-y: auto; height: 100%;">
         <router-view />
       </el-main>
     </el-container>
