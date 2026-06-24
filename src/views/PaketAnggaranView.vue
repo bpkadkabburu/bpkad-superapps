@@ -3,22 +3,19 @@ import { ref, computed, onMounted } from 'vue'
 import ExcelJS from 'exceljs'
 import { Upload, Delete, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-
-const STORAGE_KEY = 'paketAnggaran_data'
+import api from '../utils/api.js'
 
 const rawData = ref([])
 const search = ref('')
 const expandedSubkeg = ref(new Set())
 const loading = ref(false)
 
-onMounted(() => {
-  const saved = localStorage.getItem(STORAGE_KEY)
-  if (saved) {
-    try {
-      rawData.value = JSON.parse(saved)
-    } catch {
-      rawData.value = []
-    }
+onMounted(async () => {
+  try {
+    const { data } = await api.get('/paket-anggaran')
+    rawData.value = data.data
+  } catch {
+    rawData.value = []
   }
 })
 
@@ -224,11 +221,7 @@ async function handleFileImport(uploadFile) {
     ]
     const slimRows = rows.map(r => Object.fromEntries(KEEP_COLS.map(k => [k, r[k] ?? ''])))
     rawData.value = slimRows
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(slimRows))
-    } catch (storageErr) {
-      ElMessage.warning('Data berhasil dimuat tapi tidak tersimpan di cache (data terlalu besar). Data akan hilang saat halaman di-refresh.')
-    }
+    await api.post('/paket-anggaran', { data: slimRows })
     expandedSubkeg.value = new Set()
     ElMessage.success(`Berhasil import ${rows.length} baris dari ${file.name}.`)
   } catch (e) {
@@ -245,8 +238,8 @@ async function clearData() {
     'Konfirmasi Hapus',
     { type: 'warning', confirmButtonText: 'Hapus', cancelButtonText: 'Batal' }
   )
+  await api.delete('/paket-anggaran')
   rawData.value = []
-  localStorage.removeItem(STORAGE_KEY)
   expandedSubkeg.value = new Set()
   ElMessage.success('Data berhasil dihapus.')
 }

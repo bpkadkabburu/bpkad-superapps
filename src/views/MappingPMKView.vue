@@ -1,8 +1,9 @@
 <script setup>
-import { ref, computed, reactive, watch } from 'vue'
+import { ref, computed, reactive, watch, onMounted } from 'vue'
 import ExcelJS from 'exceljs'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { UploadFilled, ArrowRight } from '@element-plus/icons-vue'
+import api from '../utils/api.js'
 
 const fileRekap = ref(null)
 const filePMK = ref(null)
@@ -12,29 +13,34 @@ const loading = ref(false)
 const currentPage = ref(1)
 const pageSize = ref(100)
 
-// Pagu input per bidang dari user — persisted ke localStorage
-const PAGU_STORAGE_KEY = 'mappingPMK_paguPerBidang'
-const RESULTS_STORAGE_KEY = 'mappingPMK_results'
-
 const paguPerBidang = reactive({})
-try {
-  const saved = JSON.parse(localStorage.getItem(PAGU_STORAGE_KEY) || '{}')
-  Object.assign(paguPerBidang, saved)
-} catch {}
+const results = ref([])
 
-let initialResults = []
-try {
-  initialResults = JSON.parse(localStorage.getItem(RESULTS_STORAGE_KEY) || '[]')
-} catch {}
-const results = ref(initialResults)
+onMounted(async () => {
+  try {
+    const { data } = await api.get('/mapping-pmk')
+    Object.assign(paguPerBidang, data.pagu_per_bidang || {})
+    results.value = data.results || []
+  } catch {
+    // keep empty defaults
+  }
+})
 
-watch(paguPerBidang, (val) => {
-  localStorage.setItem(PAGU_STORAGE_KEY, JSON.stringify(val))
-}, { deep: true })
+function debounce(fn, delay) {
+  let timer
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), delay) }
+}
 
-watch(results, (val) => {
-  localStorage.setItem(RESULTS_STORAGE_KEY, JSON.stringify(val))
-}, { deep: true })
+const savePagu = debounce(async (val) => {
+  try { await api.put('/mapping-pmk/pagu', { pagu_per_bidang: val }) } catch {}
+}, 500)
+
+const saveResults = debounce(async (val) => {
+  try { await api.put('/mapping-pmk/results', { results: val }) } catch {}
+}, 500)
+
+watch(paguPerBidang, (val) => savePagu({ ...val }), { deep: true })
+watch(results, (val) => saveResults([...val]), { deep: true })
 
 // Accordion open state: array of bidang names currently expanded
 const openBidang = ref([])
@@ -144,8 +150,8 @@ async function clearResults() {
     'Konfirmasi Hapus Hasil',
     { type: 'warning', confirmButtonText: 'Hapus', cancelButtonText: 'Batal' }
   )
+  await api.delete('/mapping-pmk')
   results.value = []
-  localStorage.removeItem(RESULTS_STORAGE_KEY)
   ElMessage.success('Hasil mapping dihapus.')
 }
 
@@ -494,7 +500,6 @@ async function exportExcelBidang(info) {
         </el-button>
         <span v-if="results.length" style="font-size: 13px; color: #606266;">
           Total: <strong>{{ results.length.toLocaleString('id-ID') }}</strong> baris
-          <span style="color: #909399; margin-left: 6px;">(tersimpan di localStorage)</span>
         </span>
       </div>
     </el-card>

@@ -2,21 +2,18 @@
 import { ref, computed, onMounted } from 'vue'
 import { Upload, Delete, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-
-const STORAGE_KEY = 'realisasi_data'
+import api from '../utils/api.js'
 
 const rawData = ref([])
 const search = ref('')
 const expandedDinas = ref(new Set())
 
-onMounted(() => {
-  const saved = localStorage.getItem(STORAGE_KEY)
-  if (saved) {
-    try {
-      rawData.value = JSON.parse(saved)
-    } catch {
-      rawData.value = []
-    }
+onMounted(async () => {
+  try {
+    const { data } = await api.get('/realisasi')
+    rawData.value = data.data
+  } catch {
+    rawData.value = []
   }
 })
 
@@ -143,7 +140,7 @@ function handleFileImport(uploadFile) {
   if (!file) return
 
   const reader = new FileReader()
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try {
       const parsed = JSON.parse(e.target.result)
       if (!Array.isArray(parsed)) {
@@ -155,7 +152,7 @@ function handleFileImport(uploadFile) {
       const existingKeys = new Set(existing.map(r => `${r['NO']}_${r['KODE REKENING']}`))
       const newRows = parsed.filter(r => !existingKeys.has(`${r['NO']}_${r['KODE REKENING']}`))
       rawData.value = [...existing, ...newRows]
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(rawData.value))
+      await api.post('/realisasi', { data: rawData.value })
       ElMessage.success(`Berhasil import ${parsed.length} baris (${newRows.length} baris baru).`)
     } catch {
       ElMessage.error('File tidak valid, pastikan format JSON yang benar.')
@@ -171,8 +168,8 @@ async function clearData() {
     'Konfirmasi Hapus',
     { type: 'warning', confirmButtonText: 'Hapus', cancelButtonText: 'Batal' }
   )
+  await api.delete('/realisasi')
   rawData.value = []
-  localStorage.removeItem(STORAGE_KEY)
   expandedDinas.value = new Set()
   ElMessage.success('Data berhasil dihapus.')
 }

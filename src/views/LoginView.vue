@@ -2,7 +2,6 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { getDb } from '../utils/db'
 import { ElMessage } from 'element-plus'
 
 const router = useRouter()
@@ -14,19 +13,10 @@ const loading = ref(false)
 async function handleLogin() {
   loading.value = true
   try {
-    const db = await getDb()
-    const result = await db.select(
-      'SELECT id, username, role FROM users WHERE username = ? AND password_hash = ?',
-      [form.username, form.password]
-    )
-    if (result.length === 0) {
-      ElMessage.error('Username atau password salah')
-      return
-    }
-    auth.login(result[0])
+    await auth.login(form.username, form.password)
     router.push('/')
-  } catch (e) {
-    ElMessage.error('Gagal login: ' + e)
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error || 'Login gagal')
   } finally {
     loading.value = false
   }
