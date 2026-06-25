@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { Upload, Delete, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -19,6 +19,8 @@ onMounted(async () => {
     rawData.value = []
   }
 })
+
+onUnmounted(() => clearTimeout(batchTimer))
 
 function formatRupiah(val) {
   if (!val && val !== 0) return '-'
@@ -138,7 +140,7 @@ function collapseAll() {
 }
 
 // Import JSON — support multiple files sekaligus
-const pendingFiles = []
+let pendingFiles = []
 let batchTimer = null
 
 function handleFileImport(uploadFile) {
@@ -159,6 +161,7 @@ async function processBatch() {
       try { resolve({ name: file.name, data: JSON.parse(e.target.result) }) }
       catch { reject(new Error(file.name)) }
     }
+    reader.onerror = () => reject(new Error(file.name))
     reader.readAsText(file)
   })
 
@@ -179,25 +182,33 @@ async function processBatch() {
   const existingKeys = new Set(existing.map(r => `${r['NO']}_${r['KODE REKENING']}`))
   const dedupedNew = allNewRows.filter(r => !existingKeys.has(`${r['NO']}_${r['KODE REKENING']}`))
 
-  rawData.value = [...existing, ...dedupedNew]
-  await api.post('/realisasi', { data: rawData.value, tahun: tahun.value })
-
-  const totalRaw = allNewRows.length
-  ElMessage.success(
-    `${valid.length} file diimport — ${totalRaw} baris, ${dedupedNew.length} baris baru ditambahkan.`
-  )
+  const merged = [...existing, ...dedupedNew]
+  try {
+    await api.post('/realisasi', { data: merged, tahun: tahun.value })
+    rawData.value = merged
+    const totalRaw = allNewRows.length
+    ElMessage.success(
+      `${valid.length} file diimport — ${totalRaw} baris, ${dedupedNew.length} baris baru ditambahkan.`
+    )
+  } catch {
+    ElMessage.error('Gagal menyimpan data ke server')
+  }
 }
 
 async function clearData() {
-  await ElMessageBox.confirm(
-    'Semua data realisasi akan dihapus dari localStorage. Lanjutkan?',
-    'Konfirmasi Hapus',
-    { type: 'warning', confirmButtonText: 'Hapus', cancelButtonText: 'Batal' }
-  )
+  try {
+    await ElMessageBox.confirm(
+      'Semua data realisasi akan dihapus secara permanen dari server. Lanjutkan?',
+      'Konfirmasi Hapus',
+      { type: 'warning', confirmButtonText: 'Hapus', cancelButtonText: 'Batal' }
+    )
+  } catch {
+    return
+  }
   await api.delete('/realisasi', { params: { tahun: tahun.value } })
   rawData.value = []
   expandedDinas.value = new Set()
-  ElMessage.success('Data berhasil dihapus.')
+  ElMessage.success('Data berhasil dihapus')
 }
 
 const totalPaguAll = computed(() => rawData.value.reduce((s, r) => s + (Number(r['PAGU']) || 0), 0))
