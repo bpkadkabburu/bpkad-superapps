@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, reactive, watch, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import ExcelJS from 'exceljs'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { UploadFilled, ArrowRight } from '@element-plus/icons-vue'
@@ -12,13 +13,15 @@ const filePMKName = ref('')
 const loading = ref(false)
 const currentPage = ref(1)
 const pageSize = ref(100)
+const route = useRoute()
+const tahun = computed(() => route.params.tahun)
 
 const paguPerBidang = reactive({})
 const results = ref([])
 
 onMounted(async () => {
   try {
-    const { data } = await api.get('/mapping-pmk')
+    const { data } = await api.get('/mapping-pmk', { params: { tahun: tahun.value } })
     Object.assign(paguPerBidang, data.pagu_per_bidang || {})
     results.value = data.results || []
   } catch {
@@ -32,11 +35,11 @@ function debounce(fn, delay) {
 }
 
 const savePagu = debounce(async (val) => {
-  try { await api.put('/mapping-pmk/pagu', { pagu_per_bidang: val }) } catch {}
+  try { await api.put('/mapping-pmk/pagu', { pagu_per_bidang: val, tahun: tahun.value }) } catch {}
 }, 500)
 
 const saveResults = debounce(async (val) => {
-  try { await api.put('/mapping-pmk/results', { results: val }) } catch {}
+  try { await api.put('/mapping-pmk/results', { results: val, tahun: tahun.value }) } catch {}
 }, 500)
 
 watch(paguPerBidang, (val) => savePagu({ ...val }), { deep: true })
@@ -150,7 +153,7 @@ async function clearResults() {
     'Konfirmasi Hapus Hasil',
     { type: 'warning', confirmButtonText: 'Hapus', cancelButtonText: 'Batal' }
   )
-  await api.delete('/mapping-pmk')
+  await api.delete('/mapping-pmk', { params: { tahun: tahun.value } })
   results.value = []
   ElMessage.success('Hasil mapping dihapus.')
 }

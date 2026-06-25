@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { Upload, Delete, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../utils/api.js'
@@ -7,10 +8,12 @@ import api from '../utils/api.js'
 const rawData = ref([])
 const search = ref('')
 const expandedDinas = ref(new Set())
+const route = useRoute()
+const tahun = computed(() => route.params.tahun)
 
 onMounted(async () => {
   try {
-    const { data } = await api.get('/realisasi')
+    const { data } = await api.get('/realisasi', { params: { tahun: tahun.value } })
     rawData.value = data.data
   } catch {
     rawData.value = []
@@ -134,32 +137,55 @@ function collapseAll() {
   expandedDinas.value = new Set()
 }
 
-// Import JSON
-function handleFileImport(uploadFile) {
-  const file = uploadFile.raw
-  if (!file) return
+// Import JSON — support multiple files sekaligus
+const pendingFiles = []
+let batchTimer = null
 
-  const reader = new FileReader()
-  reader.onload = async (e) => {
-    try {
-      const parsed = JSON.parse(e.target.result)
-      if (!Array.isArray(parsed)) {
-        ElMessage.error('Format JSON harus berupa array.')
-        return
-      }
-      // Merge dengan data existing, hindari duplikat (merge by NO + KODE REKENING)
-      const existing = rawData.value
-      const existingKeys = new Set(existing.map(r => `${r['NO']}_${r['KODE REKENING']}`))
-      const newRows = parsed.filter(r => !existingKeys.has(`${r['NO']}_${r['KODE REKENING']}`))
-      rawData.value = [...existing, ...newRows]
-      await api.post('/realisasi', { data: rawData.value })
-      ElMessage.success(`Berhasil import ${parsed.length} baris (${newRows.length} baris baru).`)
-    } catch {
-      ElMessage.error('File tidak valid, pastikan format JSON yang benar.')
-    }
-  }
-  reader.readAsText(file)
+function handleFileImport(uploadFile) {
+  if (!uploadFile.raw) return false
+  pendingFiles.push(uploadFile.raw)
+  clearTimeout(batchTimer)
+  batchTimer = setTimeout(processBatch, 80)
   return false
+}
+
+async function processBatch() {
+  const files = pendingFiles.splice(0)
+  if (!files.length) return
+
+  const readFile = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try { resolve({ name: file.name, data: JSON.parse(e.target.result) }) }
+      catch { reject(new Error(file.name)) }
+    }
+    reader.readAsText(file)
+  })
+
+  const results = await Promise.allSettled(files.map(readFile))
+
+  const failed = results.filter(r => r.status === 'rejected').map(r => r.reason.message)
+  const parsed = results.filter(r => r.status === 'fulfilled').map(r => r.value)
+
+  const invalidArrays = parsed.filter(r => !Array.isArray(r.data)).map(r => r.name)
+  const valid = parsed.filter(r => Array.isArray(r.data))
+
+  if (failed.length) ElMessage.error(`Gagal parse: ${failed.join(', ')}`)
+  if (invalidArrays.length) ElMessage.error(`Bukan array: ${invalidArrays.join(', ')}`)
+  if (!valid.length) return
+
+  const allNewRows = valid.flatMap(r => r.data)
+  const existing = rawData.value
+  const existingKeys = new Set(existing.map(r => `${r['NO']}_${r['KODE REKENING']}`))
+  const dedupedNew = allNewRows.filter(r => !existingKeys.has(`${r['NO']}_${r['KODE REKENING']}`))
+
+  rawData.value = [...existing, ...dedupedNew]
+  await api.post('/realisasi', { data: rawData.value, tahun: tahun.value })
+
+  const totalRaw = allNewRows.length
+  ElMessage.success(
+    `${valid.length} file diimport — ${totalRaw} baris, ${dedupedNew.length} baris baru ditambahkan.`
+  )
 }
 
 async function clearData() {
@@ -168,7 +194,7 @@ async function clearData() {
     'Konfirmasi Hapus',
     { type: 'warning', confirmButtonText: 'Hapus', cancelButtonText: 'Batal' }
   )
-  await api.delete('/realisasi')
+  await api.delete('/realisasi', { params: { tahun: tahun.value } })
   rawData.value = []
   expandedDinas.value = new Set()
   ElMessage.success('Data berhasil dihapus.')
@@ -194,6 +220,7 @@ const totalPersenAll = computed(() => persen(totalPaguAll.value, totalRealisasiA
           :auto-upload="false"
           :show-file-list="false"
           accept=".json"
+          multiple
           :on-change="handleFileImport"
         >
           <el-button type="primary" :icon="Upload">Import JSON</el-button>

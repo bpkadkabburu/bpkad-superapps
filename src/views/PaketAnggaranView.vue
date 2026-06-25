@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import ExcelJS from 'exceljs'
 import { Upload, Delete, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -9,10 +10,12 @@ const rawData = ref([])
 const search = ref('')
 const expandedSubkeg = ref(new Set())
 const loading = ref(false)
+const route = useRoute()
+const tahun = computed(() => route.params.tahun)
 
 onMounted(async () => {
   try {
-    const { data } = await api.get('/paket-anggaran')
+    const { data } = await api.get('/paket-anggaran', { params: { tahun: tahun.value } })
     rawData.value = data.data
   } catch {
     rawData.value = []
@@ -151,7 +154,7 @@ function collapseAll() {
 function sumberDanaTagType(kode) {
   if (!kode || kode === '-') return 'info'
   const prefix = String(kode).trim().charAt(0)
-  if (prefix === '1') return ''       // primary (biru) = PAD / APBD
+  if (prefix === '1') return 'primary' // biru = PAD / APBD
   if (prefix === '2') return 'success' // hijau = Dana Transfer
   if (prefix === '3') return 'warning' // kuning = Pinjaman
   if (prefix === '4') return 'danger'  // merah = Hibah
@@ -221,7 +224,7 @@ async function handleFileImport(uploadFile) {
     ]
     const slimRows = rows.map(r => Object.fromEntries(KEEP_COLS.map(k => [k, r[k] ?? ''])))
     rawData.value = slimRows
-    await api.post('/paket-anggaran', { data: slimRows })
+    await api.post('/paket-anggaran', { data: slimRows, tahun: tahun.value })
     expandedSubkeg.value = new Set()
     ElMessage.success(`Berhasil import ${rows.length} baris dari ${file.name}.`)
   } catch (e) {
@@ -238,7 +241,7 @@ async function clearData() {
     'Konfirmasi Hapus',
     { type: 'warning', confirmButtonText: 'Hapus', cancelButtonText: 'Batal' }
   )
-  await api.delete('/paket-anggaran')
+  await api.delete('/paket-anggaran', { params: { tahun: tahun.value } })
   rawData.value = []
   expandedSubkeg.value = new Set()
   ElMessage.success('Data berhasil dihapus.')
