@@ -1,3 +1,4 @@
+// api/src/routes/mapping.js
 import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
@@ -7,9 +8,13 @@ router.use('*', requireAuth)
 
 router.get('/', async (c) => {
   const user = c.get('user')
+  const tahun = c.req.query('tahun')
+  if (!tahun) return c.json({ pagu_per_bidang: {}, results: [] })
   const [rows] = await db.query(
-    'SELECT pagu_per_bidang, results FROM mapping_pmk WHERE user_id = ?',
-    [user.id]
+    `SELECT m.pagu_per_bidang, m.results FROM mapping_pmk m
+     INNER JOIN tahun_anggaran ta ON m.tahun_id = ta.id
+     WHERE m.user_id = ? AND ta.tahun = ?`,
+    [user.id, tahun]
   )
   return c.json({
     pagu_per_bidang: rows[0]?.pagu_per_bidang || {},
@@ -19,19 +24,26 @@ router.get('/', async (c) => {
 
 router.put('/pagu', async (c) => {
   const user = c.get('user')
-  const { pagu_per_bidang } = await c.req.json()
+  const { pagu_per_bidang, tahun } = await c.req.json()
+  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
+  const [taRows] = await db.query(
+    'SELECT id FROM tahun_anggaran WHERE tahun = ?', [tahun]
+  )
+  const tahun_id = taRows[0]?.id
+  if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
   const [existing] = await db.query(
-    'SELECT id FROM mapping_pmk WHERE user_id = ?', [user.id]
+    'SELECT id FROM mapping_pmk WHERE user_id = ? AND tahun_id = ?',
+    [user.id, tahun_id]
   )
   if (existing[0]) {
     await db.query(
-      'UPDATE mapping_pmk SET pagu_per_bidang = ?, updated_at = NOW() WHERE user_id = ?',
-      [JSON.stringify(pagu_per_bidang), user.id]
+      'UPDATE mapping_pmk SET pagu_per_bidang = ?, updated_at = NOW() WHERE user_id = ? AND tahun_id = ?',
+      [JSON.stringify(pagu_per_bidang), user.id, tahun_id]
     )
   } else {
     await db.query(
-      'INSERT INTO mapping_pmk (user_id, pagu_per_bidang, results) VALUES (?, ?, ?)',
-      [user.id, JSON.stringify(pagu_per_bidang), JSON.stringify([])]
+      'INSERT INTO mapping_pmk (user_id, tahun_id, pagu_per_bidang, results) VALUES (?, ?, ?, ?)',
+      [user.id, tahun_id, JSON.stringify(pagu_per_bidang), JSON.stringify([])]
     )
   }
   return c.json({ success: true })
@@ -39,19 +51,26 @@ router.put('/pagu', async (c) => {
 
 router.put('/results', async (c) => {
   const user = c.get('user')
-  const { results } = await c.req.json()
+  const { results, tahun } = await c.req.json()
+  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
+  const [taRows] = await db.query(
+    'SELECT id FROM tahun_anggaran WHERE tahun = ?', [tahun]
+  )
+  const tahun_id = taRows[0]?.id
+  if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
   const [existing] = await db.query(
-    'SELECT id FROM mapping_pmk WHERE user_id = ?', [user.id]
+    'SELECT id FROM mapping_pmk WHERE user_id = ? AND tahun_id = ?',
+    [user.id, tahun_id]
   )
   if (existing[0]) {
     await db.query(
-      'UPDATE mapping_pmk SET results = ?, updated_at = NOW() WHERE user_id = ?',
-      [JSON.stringify(results), user.id]
+      'UPDATE mapping_pmk SET results = ?, updated_at = NOW() WHERE user_id = ? AND tahun_id = ?',
+      [JSON.stringify(results), user.id, tahun_id]
     )
   } else {
     await db.query(
-      'INSERT INTO mapping_pmk (user_id, pagu_per_bidang, results) VALUES (?, ?, ?)',
-      [user.id, JSON.stringify({}), JSON.stringify(results)]
+      'INSERT INTO mapping_pmk (user_id, tahun_id, pagu_per_bidang, results) VALUES (?, ?, ?, ?)',
+      [user.id, tahun_id, JSON.stringify({}), JSON.stringify(results)]
     )
   }
   return c.json({ success: true })
@@ -59,7 +78,14 @@ router.put('/results', async (c) => {
 
 router.delete('/', async (c) => {
   const user = c.get('user')
-  await db.query('DELETE FROM mapping_pmk WHERE user_id = ?', [user.id])
+  const tahun = c.req.query('tahun')
+  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
+  await db.query(
+    `DELETE m FROM mapping_pmk m
+     INNER JOIN tahun_anggaran ta ON m.tahun_id = ta.id
+     WHERE m.user_id = ? AND ta.tahun = ?`,
+    [user.id, tahun]
+  )
   return c.json({ success: true })
 })
 
