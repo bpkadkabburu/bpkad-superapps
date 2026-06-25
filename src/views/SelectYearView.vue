@@ -45,7 +45,9 @@ async function tambahTahun() {
     showForm.value = false
     ElMessage.success(`Tahun ${data.tahun} berhasil ditambahkan`)
   } catch (err) {
-    const msg = err.response?.data?.error || 'Gagal menambahkan tahun'
+    const msg = err.response?.status === 409
+      ? 'Tahun sudah ada'
+      : 'Gagal menambahkan tahun'
     ElMessage.error(msg)
   } finally {
     submitting.value = false
