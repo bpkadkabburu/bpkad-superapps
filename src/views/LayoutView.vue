@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { HomeFilled, DataAnalysis, TrendCharts, Folder } from '@element-plus/icons-vue'
+import { HomeFilled, DataAnalysis, TrendCharts, Document, FolderOpened } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -10,15 +10,7 @@ const auth = useAuthStore()
 
 const tahun = computed(() => route.params.tahun)
 
-const activeMenu = computed(() => {
-  if (!tahun.value) return '/'
-  const segments = route.path.split('/')
-  // /tahun/2025/feature → segments = ['', 'tahun', '2025', 'feature']
-  const feature = segments[3] || ''
-  return feature
-    ? `/tahun/${tahun.value}/${feature}`
-    : `/tahun/${tahun.value}`
-})
+const activeMenu = computed(() => route.path)
 
 function logout() {
   auth.logout()
@@ -77,18 +69,34 @@ function gantiTahun() {
             <el-icon><HomeFilled /></el-icon>
             <span>Beranda</span>
           </el-menu-item>
-          <el-menu-item :index="`/tahun/${tahun}/mapping-pmk`">
-            <el-icon><DataAnalysis /></el-icon>
-            <span>Mapping PMK</span>
-          </el-menu-item>
+          <el-sub-menu index="referensi">
+            <template #title>
+              <el-icon><DataAnalysis /></el-icon>
+              <span>Referensi</span>
+            </template>
+            <el-menu-item :index="`/tahun/${tahun}/referensi/subkegiatan-pmk`">
+              <el-icon><Document /></el-icon>
+              <span>Subkegiatan PMK</span>
+            </el-menu-item>
+          </el-sub-menu>
           <el-menu-item :index="`/tahun/${tahun}/realisasi`">
             <el-icon><TrendCharts /></el-icon>
             <span>Realisasi</span>
           </el-menu-item>
-          <el-menu-item :index="`/tahun/${tahun}/paket-anggaran`">
-            <el-icon><Folder /></el-icon>
-            <span>Paket Anggaran</span>
-          </el-menu-item>
+          <el-sub-menu index="sumber-data">
+            <template #title>
+              <el-icon><FolderOpened /></el-icon>
+              <span>Sumber Data</span>
+            </template>
+            <el-menu-item :index="`/tahun/${tahun}/sumber-data/anggaran`">
+              <el-icon><Document /></el-icon>
+              <span>Anggaran Rekap</span>
+            </el-menu-item>
+            <el-menu-item :index="`/tahun/${tahun}/sumber-data/dokumen-realisasi`">
+              <el-icon><Document /></el-icon>
+              <span>Dokumen Realisasi</span>
+            </el-menu-item>
+          </el-sub-menu>
         </el-menu>
       </el-aside>
 

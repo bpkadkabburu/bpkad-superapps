@@ -28,9 +28,14 @@ const routes = [
             component: () => import('../views/HomeView.vue')
           },
           {
-            path: 'mapping-pmk',
-            name: 'MappingPMK',
-            component: () => import('../views/MappingPMKView.vue')
+            path: 'referensi',
+            children: [
+              {
+                path: 'subkegiatan-pmk',
+                name: 'SubkegiatanPMK',
+                component: () => import('../views/SubkegiatanPMKView.vue')
+              }
+            ]
           },
           {
             path: 'realisasi',
@@ -38,9 +43,19 @@ const routes = [
             component: () => import('../views/RealisasiView.vue')
           },
           {
-            path: 'paket-anggaran',
-            name: 'PaketAnggaran',
-            component: () => import('../views/PaketAnggaranView.vue')
+            path: 'sumber-data',
+            children: [
+              {
+                path: 'anggaran',
+                name: 'AnggaranRekap',
+                component: () => import('../views/AnggaranRekapView.vue')
+              },
+              {
+                path: 'dokumen-realisasi',
+                name: 'DokumenRealisasi',
+                component: () => import('../views/DokumenRealisasiView.vue')
+              }
+            ]
           }
         ]
       }
