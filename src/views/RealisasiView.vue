@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { Upload, Delete, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -8,6 +8,8 @@ import api from '../utils/api.js'
 const rawData = ref([])
 const search = ref('')
 const expandedDinas = ref(new Set())
+const currentPage = ref(1)
+const pageSize = ref(10)
 const route = useRoute()
 const tahun = computed(() => route.params.tahun)
 
@@ -97,14 +99,16 @@ const grouped = computed(() => {
     }
   }
 
-  // Flatten to array
-  return Array.from(map.values()).map(d => ({
-    ...d,
-    subkegiatan: Array.from(d.subkegMap.values()).map(sk => ({
-      ...sk,
-      rekening: Array.from(sk.rekeningMap.values()),
-    })),
-  }))
+  // Flatten to array, sorted by kode sub unit
+  return Array.from(map.values())
+    .sort((a, b) => a.kode.localeCompare(b.kode))
+    .map(d => ({
+      ...d,
+      subkegiatan: Array.from(d.subkegMap.values()).map(sk => ({
+        ...sk,
+        rekening: Array.from(sk.rekeningMap.values()),
+      })),
+    }))
 })
 
 const filteredGrouped = computed(() => {
@@ -121,6 +125,13 @@ const filteredGrouped = computed(() => {
     }))
     .filter(d => d.subkegiatan.length > 0)
 })
+
+const paginatedGrouped = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredGrouped.value.slice(start, start + pageSize.value)
+})
+
+watch(search, () => { currentPage.value = 1 })
 
 function toggleDinas(kode) {
   if (expandedDinas.value.has(kode)) {
@@ -300,7 +311,7 @@ const totalPersenAll = computed(() => persen(totalPaguAll.value, totalRealisasiA
       />
 
       <!-- Dinas cards -->
-      <div v-for="dinas in filteredGrouped" :key="dinas.kode" style="margin-bottom:12px;">
+      <div v-for="dinas in paginatedGrouped" :key="dinas.kode" style="margin-bottom:12px;">
         <!-- Dinas header (clickable) -->
         <div
           @click="toggleDinas(dinas.kode)"
@@ -455,6 +466,16 @@ const totalPersenAll = computed(() => persen(totalPaguAll.value, totalRealisasiA
           </el-table>
         </div>
       </div>
+
+      <el-pagination
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        :page-sizes="[5, 10, 20, 50]"
+        :total="filteredGrouped.length"
+        layout="total, sizes, prev, pager, next"
+        background
+        style="margin-top:16px; justify-content:flex-end; display:flex;"
+      />
     </template>
   </div>
 </template>

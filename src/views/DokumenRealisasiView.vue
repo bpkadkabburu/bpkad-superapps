@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import ExcelJS from 'exceljs'
 import { Upload, Delete, Search } from '@element-plus/icons-vue'
@@ -8,6 +8,8 @@ import api from '../utils/api.js'
 
 const rawData = ref([])
 const search = ref('')
+const currentPage = ref(1)
+const pageSize = ref(50)
 const route = useRoute()
 const tahun = computed(() => route.params.tahun)
 
@@ -37,6 +39,13 @@ const filtered = computed(() => {
     r.kode_sub_skpd?.toLowerCase().includes(q)
   )
 })
+
+const paginated = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filtered.value.slice(start, start + pageSize.value)
+})
+
+watch(search, () => { currentPage.value = 1 })
 
 async function handleFileImport(uploadFile) {
   if (!uploadFile.raw) return false
@@ -150,14 +159,14 @@ async function clearData() {
       </div>
 
       <el-table
-        :data="filtered"
+        :data="paginated"
         border
         stripe
         size="small"
         style="width:100%;"
         :header-cell-style="{ background:'#f5f7fa', color:'#606266', fontSize:'12px', fontWeight:'600' }"
       >
-        <el-table-column type="index" label="No" width="55" align="center" />
+        <el-table-column type="index" :index="(currentPage - 1) * pageSize + 1" label="No" width="55" align="center" />
         <el-table-column label="Kode Sub SKPD" prop="kode_sub_skpd" width="200">
           <template #default="{ row }">
             <span style="font-family:monospace; font-size:11px; color:#606266;">{{ row.kode_sub_skpd }}</span>
@@ -194,6 +203,16 @@ async function clearData() {
           </template>
         </el-table-column>
       </el-table>
+
+      <el-pagination
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        :page-sizes="[20, 50, 100, 200]"
+        :total="filtered.length"
+        layout="total, sizes, prev, pager, next"
+        background
+        style="margin-top:16px; justify-content:flex-end; display:flex;"
+      />
     </template>
   </div>
 </template>
