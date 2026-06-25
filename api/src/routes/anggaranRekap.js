@@ -63,28 +63,40 @@ router.post('/', async (c) => {
   const tahun_id = taRows[0]?.id
   if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
 
-  await db.query(
-    'DELETE FROM anggaran_rekap WHERE user_id = ? AND tahun_id = ?',
-    [user.id, tahun_id]
-  )
+  const conn = await db.getConnection()
+  try {
+    await conn.beginTransaction()
 
-  const placeholders = cols.map(() => '?').join(', ')
-  const BATCH = 200
-  for (let i = 0; i < data.length; i += BATCH) {
-    const chunk = data.slice(i, i + BATCH)
-    const rowPlaceholders = chunk.map(() => `(?, ?, ${placeholders})`).join(', ')
-    const values = chunk.flatMap(row => [
-      user.id,
-      tahun_id,
-      ...Object.entries(FIELD_MAP).map(([excelKey]) => {
-        const val = row[excelKey] ?? null
-        return val === '' ? null : val
-      }),
-    ])
-    await db.query(
-      `INSERT INTO anggaran_rekap (user_id, tahun_id, ${cols.join(', ')}) VALUES ${rowPlaceholders}`,
-      values
+    await conn.query(
+      'DELETE FROM anggaran_rekap WHERE user_id = ? AND tahun_id = ?',
+      [user.id, tahun_id]
     )
+
+    const placeholders = cols.map(() => '?').join(', ')
+    const BATCH = 200
+    for (let i = 0; i < data.length; i += BATCH) {
+      const chunk = data.slice(i, i + BATCH)
+      const rowPlaceholders = chunk.map(() => `(?, ?, ${placeholders})`).join(', ')
+      const values = chunk.flatMap(row => [
+        user.id,
+        tahun_id,
+        ...Object.entries(FIELD_MAP).map(([excelKey]) => {
+          const val = row[excelKey] ?? null
+          return val === '' ? null : val
+        }),
+      ])
+      await conn.query(
+        `INSERT INTO anggaran_rekap (user_id, tahun_id, ${cols.join(', ')}) VALUES ${rowPlaceholders}`,
+        values
+      )
+    }
+
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
   }
 
   return c.json({ success: true, inserted: data.length })

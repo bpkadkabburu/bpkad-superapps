@@ -11,6 +11,13 @@ const search = ref('')
 const route = useRoute()
 const tahun = computed(() => route.params.tahun)
 
+function getCellText(val) {
+  if (val == null) return null
+  if (typeof val === 'object' && val.richText) return val.richText.map(r => r.text).join('')
+  if (typeof val === 'object' && val.text) return val.text
+  return String(val)
+}
+
 onMounted(async () => {
   try {
     const { data } = await api.get('/sumber-data/anggaran', { params: { tahun: tahun.value } })
@@ -60,13 +67,12 @@ async function handleFileImport(uploadFile) {
   ws.eachRow((row, rowNum) => {
     if (rowNum === 1) return
     // Skip baris hierarchy (tanpa kode rekening)
-    const kodeRek = row.getCell(colMap['KODE REKENING']).value
+    const kodeRek = getCellText(row.getCell(colMap['KODE REKENING']).value)
     if (!kodeRek) return
 
     const obj = {}
     Object.entries(colMap).forEach(([header, colNum]) => {
-      const val = row.getCell(colNum).value
-      obj[header] = val == null ? null : val
+      obj[header] = getCellText(row.getCell(colNum).value)
     })
     rows.push(obj)
   })
