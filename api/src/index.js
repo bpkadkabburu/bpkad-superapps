@@ -6,6 +6,7 @@ import authRoutes from './routes/auth.js'
 import realisasiRoutes from './routes/realisasi.js'
 import paketRoutes from './routes/paket.js'
 import mappingRoutes from './routes/mapping.js'
+import tahunAnggaranRoutes from './routes/tahunAnggaran.js'
 
 const app = new Hono()
 
@@ -16,6 +17,7 @@ app.use('*', cors({
 }))
 
 app.route('/api/auth', authRoutes)
+app.route('/api/tahun-anggaran', tahunAnggaranRoutes)
 app.route('/api/realisasi', realisasiRoutes)
 app.route('/api/paket-anggaran', paketRoutes)
 app.route('/api/mapping-pmk', mappingRoutes)
