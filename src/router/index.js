@@ -1,3 +1,4 @@
+// src/router/index.js
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
@@ -15,23 +16,33 @@ const routes = [
     children: [
       {
         path: '',
-        name: 'Home',
-        component: () => import('../views/HomeView.vue')
+        name: 'SelectYear',
+        component: () => import('../views/SelectYearView.vue')
       },
       {
-        path: 'mapping-pmk',
-        name: 'MappingPMK',
-        component: () => import('../views/MappingPMKView.vue')
-      },
-      {
-        path: 'realisasi',
-        name: 'Realisasi',
-        component: () => import('../views/RealisasiView.vue')
-      },
-      {
-        path: 'paket-anggaran',
-        name: 'PaketAnggaran',
-        component: () => import('../views/PaketAnggaranView.vue')
+        path: 'tahun/:tahun',
+        children: [
+          {
+            path: '',
+            name: 'Home',
+            component: () => import('../views/HomeView.vue')
+          },
+          {
+            path: 'mapping-pmk',
+            name: 'MappingPMK',
+            component: () => import('../views/MappingPMKView.vue')
+          },
+          {
+            path: 'realisasi',
+            name: 'Realisasi',
+            component: () => import('../views/RealisasiView.vue')
+          },
+          {
+            path: 'paket-anggaran',
+            name: 'PaketAnggaran',
+            component: () => import('../views/PaketAnggaranView.vue')
+          }
+        ]
       }
     ]
   }
@@ -50,7 +61,7 @@ router.beforeEach((to) => {
   }
 
   if (to.meta.requiresSuperadmin && auth.user?.role !== 'superadmin') {
-    return { name: 'Home' }
+    return { name: 'SelectYear' }
   }
 })
 
