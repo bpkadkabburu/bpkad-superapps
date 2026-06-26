@@ -31,3 +31,13 @@ src-tauri/flycheck*/
 *.njsproj
 *.sln
 *.sw?
+
+.mcp.json
+
+# Environment files (jangan di-commit — berisi secrets/config lokal)
+.env
+.env.*
+
+# AI-generated planning docs & superpowers workspace
+.superpowers/
+docs/
