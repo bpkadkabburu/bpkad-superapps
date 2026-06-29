@@ -6,6 +6,7 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "migrate": "node migrate.js",
+    "migrate:fresh": "node migrate-fresh.js",
     "seed": "node seed.js"
   },
   "dependencies": {

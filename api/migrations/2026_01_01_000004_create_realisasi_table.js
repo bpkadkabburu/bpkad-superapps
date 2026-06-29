@@ -1,10 +1,8 @@
-export const name = '003_realisasi_rows'
+export const name = '2026_01_01_000004_create_realisasi_table'
 
 export async function up(db) {
-  await db.query(`DROP TABLE IF EXISTS realisasi`)
-
   await db.query(`
-    CREATE TABLE realisasi (
+    CREATE TABLE IF NOT EXISTS realisasi (
       id                 INT AUTO_INCREMENT PRIMARY KEY,
       user_id            INT NOT NULL,
       tahun_id           INT NOT NULL,
@@ -32,7 +30,7 @@ export async function up(db) {
       rincian_objek      VARCHAR(20),
       sub_rincian_objek  VARCHAR(50),
       uploaded_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id)  REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (tahun_id) REFERENCES tahun_anggaran(id) ON DELETE CASCADE
     )
   `)

@@ -5,10 +5,12 @@ import { useRouter } from 'vue-router'
 import { ArrowRight } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
+import { useTahunStore } from '../stores/tahun'
 import api from '../utils/api.js'
 
 const router = useRouter()
 const auth = useAuthStore()
+const tahunStore = useTahunStore()
 
 const tahunList = ref([])
 const loading = ref(false)
@@ -29,6 +31,7 @@ onMounted(async () => {
 })
 
 function pilihTahun(item) {
+  tahunStore.setActiveTahun(item)
   router.push({ name: 'Home', params: { tahun: item.tahun } })
 }
 

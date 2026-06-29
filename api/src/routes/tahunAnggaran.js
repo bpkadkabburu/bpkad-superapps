@@ -7,7 +7,7 @@ router.use('*', requireAuth)
 
 router.get('/', async (c) => {
   const [rows] = await db.query(
-    'SELECT id, tahun FROM tahun_anggaran ORDER BY tahun DESC'
+    'SELECT id, tahun, skpd_synced_at FROM tahun_anggaran ORDER BY tahun DESC'
   )
   return c.json({ data: rows })
 })

@@ -1,6 +1,6 @@
-// src/router/index.js
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { useTahunStore } from '../stores/tahun'
 
 const routes = [
   {
@@ -31,16 +31,23 @@ const routes = [
             path: 'referensi',
             children: [
               {
+                path: 'skpd',
+                name: 'ReferensiSKPD',
+                component: () => import('../views/referensi/SkpdView.vue')
+              },
+              {
                 path: 'subkegiatan-pmk',
                 name: 'SubkegiatanPMK',
-                component: () => import('../views/SubkegiatanPMKView.vue')
+                component: () => import('../views/SubkegiatanPMKView.vue'),
+                meta: { requiresSkpdSync: true }
               }
             ]
           },
           {
             path: 'realisasi',
             name: 'Realisasi',
-            component: () => import('../views/RealisasiView.vue')
+            component: () => import('../views/RealisasiView.vue'),
+            meta: { requiresSkpdSync: true }
           },
           {
             path: 'sumber-data',
@@ -48,12 +55,14 @@ const routes = [
               {
                 path: 'anggaran',
                 name: 'AnggaranRekap',
-                component: () => import('../views/AnggaranRekapView.vue')
+                component: () => import('../views/AnggaranRekapView.vue'),
+                meta: { requiresSkpdSync: true }
               },
               {
                 path: 'dokumen-realisasi',
                 name: 'DokumenRealisasi',
-                component: () => import('../views/DokumenRealisasiView.vue')
+                component: () => import('../views/DokumenRealisasiView.vue'),
+                meta: { requiresSkpdSync: true }
               }
             ]
           }
@@ -77,6 +86,15 @@ router.beforeEach((to) => {
 
   if (to.meta.requiresSuperadmin && auth.user?.role !== 'superadmin') {
     return { name: 'SelectYear' }
+  }
+
+  // Guard: redirect ke halaman SKPD jika belum sync
+  if (to.meta.requiresSkpdSync) {
+    const tahunStore = useTahunStore()
+    const tahun = to.params.tahun
+    if (!tahunStore.skpdSyncedAt) {
+      return { name: 'ReferensiSKPD', params: { tahun } }
+    }
   }
 })
 

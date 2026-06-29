@@ -11,11 +11,11 @@ router.get('/', async (c) => {
   if (!tahun) return c.json({ data: [] })
 
   const [rows] = await db.query(
-    `SELECT s.kode_subkegiatan, s.subkegiatan, s.bidang
+    `SELECT s.kode_sub_kegiatan, s.sub_kegiatan, s.bidang
      FROM subkegiatan_pmk s
      INNER JOIN tahun_anggaran ta ON s.tahun_id = ta.id
      WHERE s.user_id = ? AND ta.tahun = ?
-     ORDER BY s.kode_subkegiatan`,
+     ORDER BY s.kode_sub_kegiatan`,
     [user.id, tahun]
   )
   return c.json({ data: rows })
@@ -47,12 +47,12 @@ router.post('/', async (c) => {
     const values = chunk.flatMap(row => [
       user.id,
       tahun_id,
-      row.kode_subkegiatan ?? null,
-      row.subkegiatan ?? null,
+      row.kode_sub_kegiatan ?? row.kode_subkegiatan ?? null,
+      row.sub_kegiatan ?? row.subkegiatan ?? null,
       row.bidang ?? null,
     ])
     await db.query(
-      `INSERT INTO subkegiatan_pmk (user_id, tahun_id, kode_subkegiatan, subkegiatan, bidang)
+      `INSERT INTO subkegiatan_pmk (user_id, tahun_id, kode_sub_kegiatan, sub_kegiatan, bidang)
        VALUES ${placeholders}`,
       values
     )
