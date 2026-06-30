@@ -4,7 +4,7 @@ export async function up(db) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS skpd (
       id           CHAR(36)     NOT NULL DEFAULT (UUID()),
-      tahun_id     INT          NOT NULL,
+      tahun_id     CHAR(36)     NOT NULL,
       id_skpd      INT          NOT NULL,
       id_daerah    INT,
       kode_skpd    VARCHAR(50),

@@ -44,12 +44,6 @@ const routes = [
             ]
           },
           {
-            path: 'realisasi',
-            name: 'Realisasi',
-            component: () => import('../views/RealisasiView.vue'),
-            meta: { requiresSkpdSync: true }
-          },
-          {
             path: 'sumber-data',
             children: [
               {

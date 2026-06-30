@@ -3,9 +3,9 @@ export const name = '2026_01_01_000007_create_dokumen_realisasi_table'
 export async function up(db) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS dokumen_realisasi (
-      id                       INT AUTO_INCREMENT PRIMARY KEY,
-      user_id                  INT NOT NULL,
-      tahun_id                 INT NOT NULL,
+      id                       CHAR(36)  NOT NULL DEFAULT (UUID()),
+      user_id                  CHAR(36)  NOT NULL,
+      tahun_id                 CHAR(36)  NOT NULL,
       kode_skpd                VARCHAR(50),
       nama_skpd                VARCHAR(255),
       kode_sub_skpd            VARCHAR(50),
@@ -52,6 +52,7 @@ export async function up(db) {
       tanggal_transfer         VARCHAR(50),
       nilai_sp2d               BIGINT DEFAULT 0,
       uploaded_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
       FOREIGN KEY (user_id)  REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (tahun_id) REFERENCES tahun_anggaran(id) ON DELETE CASCADE
     )

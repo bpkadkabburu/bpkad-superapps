@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useTahunStore } from '../stores/tahun'
-import { HomeFilled, DataAnalysis, TrendCharts, Document, FolderOpened } from '@element-plus/icons-vue'
+import { HomeFilled, DataAnalysis, Document, FolderOpened } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -92,10 +92,6 @@ function gantiTahun() {
           </el-sub-menu>
 
           <template v-if="skpdSynced">
-            <el-menu-item :index="`/tahun/${tahun}/realisasi`">
-              <el-icon><TrendCharts /></el-icon>
-              <span>Realisasi</span>
-            </el-menu-item>
             <el-sub-menu index="sumber-data">
               <template #title>
                 <el-icon><FolderOpened /></el-icon>

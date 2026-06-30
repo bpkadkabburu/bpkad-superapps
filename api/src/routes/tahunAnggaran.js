@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { randomUUID } from 'crypto'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 
@@ -22,11 +23,12 @@ router.post('/', async (c) => {
     return c.json({ error: 'Tahun tidak valid' }, 400)
   }
   try {
-    const [result] = await db.query(
-      'INSERT INTO tahun_anggaran (tahun) VALUES (?)',
-      [Number(tahun)]
+    const id = randomUUID()
+    await db.query(
+      'INSERT INTO tahun_anggaran (id, tahun) VALUES (?, ?)',
+      [id, Number(tahun)]
     )
-    return c.json({ id: result.insertId, tahun: Number(tahun) })
+    return c.json({ id, tahun: Number(tahun) })
   } catch (e) {
     if (e.code === 'ER_DUP_ENTRY') {
       return c.json({ error: 'Tahun sudah ada' }, 409)
