@@ -7,6 +7,6 @@ export async function up(db) {
   `)
   await db.query(`
     CREATE INDEX idx_dokumen_realisasi_bulan
-    ON dokumen_realisasi (user_id, tahun_id, bulan)
+    ON dokumen_realisasi (tahun_id, bulan)
   `)
 }

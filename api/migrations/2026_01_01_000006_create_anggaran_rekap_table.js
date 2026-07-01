@@ -4,7 +4,6 @@ export async function up(db) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS anggaran_rekap (
       id                   CHAR(36)  NOT NULL DEFAULT (UUID()),
-      user_id              CHAR(36)  NOT NULL,
       tahun_id             CHAR(36)  NOT NULL,
       no                   INT,
       tahun_file           INT,
@@ -31,7 +30,6 @@ export async function up(db) {
       pagu                 BIGINT DEFAULT 0,
       uploaded_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (id),
-      FOREIGN KEY (user_id)  REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (tahun_id) REFERENCES tahun_anggaran(id) ON DELETE CASCADE
     )
   `)

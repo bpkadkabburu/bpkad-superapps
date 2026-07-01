@@ -12,6 +12,7 @@ const DROP_ORDER = [
   'realisasi',
   'skpd',
   'tahun_anggaran',
+  'api_keys',
   'users',
   'migrations',
 ]

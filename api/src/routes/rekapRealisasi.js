@@ -27,7 +27,6 @@ function addTotals(target, source) {
 }
 
 router.get('/', async (c) => {
-  const user = c.get('user')
   const tahun = c.req.query('tahun')
   if (!tahun) return c.json({ data: [] })
 
@@ -48,20 +47,20 @@ router.get('/', async (c) => {
        kode_sumber_dana, nama_sumber_dana,
        SUM(pagu) AS pagu
      FROM anggaran_rekap
-     WHERE user_id = ? AND tahun_id = ?
+     WHERE tahun_id = ?
      GROUP BY kode_skpd, nama_skpd, kode_sub_unit, nama_sub_unit,
        kode_urusan, nama_urusan, kode_bidang_urusan, nama_bidang_urusan,
        kode_program, nama_program, kode_kegiatan, nama_kegiatan,
        kode_sub_kegiatan, nama_sub_kegiatan, kode_rekening, nama_rekening,
        kode_sumber_dana, nama_sumber_dana`,
-    [user.id, tahun_id]
+    [tahun_id]
   )
 
   // Peta bidang PMK per kode_sub_kegiatan (kalau tabel referensi ada isinya).
   const [pmkRows] = await db.query(
     `SELECT kode_sub_kegiatan, bidang FROM subkegiatan_pmk
-     WHERE user_id = ? AND tahun_id = ?`,
-    [user.id, tahun_id]
+     WHERE tahun_id = ?`,
+    [tahun_id]
   )
   const bidangBySubKeg = new Map()
   for (const r of pmkRows) {
@@ -82,12 +81,12 @@ router.get('/', async (c) => {
        SUM(CASE WHEN nomor_sp2d IS NOT NULL AND LOWER(TRIM(nomor_sp2d)) NOT IN ('', 'null', '-')
                 THEN nilai_realisasi ELSE 0 END) AS realisasi_sp2d
      FROM dokumen_realisasi
-     WHERE user_id = ? AND tahun_id = ?
+     WHERE tahun_id = ?
      GROUP BY kode_skpd, nama_skpd, kode_sub_skpd, nama_sub_skpd,
        kode_urusan, nama_urusan, kode_bidang_urusan, nama_bidang_urusan,
        kode_program, nama_program, kode_kegiatan, nama_kegiatan,
        kode_sub_kegiatan, nama_sub_kegiatan, kode_rekening, nama_rekening`,
-    [user.id, tahun_id]
+    [tahun_id]
   )
 
   // Kunci gabung: seluruh kode hierarki, karena kode_sub_kegiatan + kode_rekening
