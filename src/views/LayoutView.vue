@@ -106,6 +106,11 @@ function gantiTahun() {
                 <span>Dokumen Realisasi</span>
               </el-menu-item>
             </el-sub-menu>
+
+            <el-menu-item :index="`/tahun/${tahun}/rekap-realisasi`">
+              <el-icon><DataAnalysis /></el-icon>
+              <span>Rekap Realisasi</span>
+            </el-menu-item>
           </template>
         </el-menu>
       </el-aside>

@@ -8,6 +8,7 @@ import tahunAnggaranRoutes from './routes/tahunAnggaran.js'
 import anggaranRekapRoutes from './routes/anggaranRekap.js'
 import dokumenRealisasiRoutes from './routes/dokumenRealisasi.js'
 import skpdRoutes from './routes/skpd.js'
+import rekapRealisasiRoutes from './routes/rekapRealisasi.js'
 
 const app = new Hono()
 
@@ -23,6 +24,7 @@ app.route('/api/referensi/skpd', skpdRoutes)
 app.route('/api/referensi/subkegiatan-pmk', subkegiatanPmkRoutes)
 app.route('/api/sumber-data/anggaran', anggaranRekapRoutes)
 app.route('/api/sumber-data/dokumen-realisasi', dokumenRealisasiRoutes)
+app.route('/api/rekap-realisasi', rekapRealisasiRoutes)
 
 serve({ fetch: app.fetch, port: 3001 }, () => {
   console.log('API running on http://localhost:3001')

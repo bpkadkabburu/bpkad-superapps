@@ -59,6 +59,12 @@ const routes = [
                 meta: { requiresSkpdSync: true }
               }
             ]
+          },
+          {
+            path: 'rekap-realisasi',
+            name: 'RekapRealisasi',
+            component: () => import('../views/RekapRealisasiView.vue'),
+            meta: { requiresSkpdSync: true }
           }
         ]
       }

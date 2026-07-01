@@ -1,3 +1,6 @@
+# Claude local settings (contains credentials)
+.mcp.json
+
 # Logs
 logs
 *.log

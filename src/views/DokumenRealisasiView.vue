@@ -122,7 +122,7 @@ async function clearData() {
       <div>
         <h2 style="margin:0; font-size:18px; font-weight:700; color:#303133;">Dokumen Realisasi</h2>
         <p style="margin:4px 0 0; font-size:13px; color:#909399;">
-          {{ rawData.length }} dokumen &bull; Sumber: Laporan Realisasi Per Dokumen
+          {{ rawData.length }} dokumen &bull; Sumber: API SIPD Penatausahaan (via extension) atau import Excel
         </p>
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
@@ -140,9 +140,34 @@ async function clearData() {
       </div>
     </div>
 
+    <el-alert
+      v-if="rawData.length === 0"
+      type="info"
+      :closable="false"
+      style="margin-bottom:20px;"
+    >
+      <template #title>Kirim data dari extension SIPD</template>
+      <template #default>
+        <p style="margin:8px 0 0; font-size:13px; line-height:1.6;">
+          Gunakan <strong>browser extension SIPD</strong> untuk menarik Laporan Realisasi Per Dokumen
+          dan kirim JSON apa adanya ke endpoint berikut:
+        </p>
+        <el-tag type="info" style="margin-top:8px; font-family:monospace; font-size:12px;">
+          POST /api/sumber-data/dokumen-realisasi
+        </el-tag>
+        <p style="margin:8px 0 0; font-size:12px; color:#909399;">
+          Body: <code>&#123; "tahun": {{ tahun }}, "data": [ ...baris JSON SIPD... ] &#125;</code>
+          &nbsp;&bull;&nbsp; Authorization: Bearer &lt;token&gt;
+        </p>
+        <p style="margin:6px 0 0; font-size:12px; color:#909399;">
+          Alternatif: tombol <strong>Import Excel</strong> di kanan atas untuk file Laporan Realisasi Per Dokumen.
+        </p>
+      </template>
+    </el-alert>
+
     <el-empty
       v-if="rawData.length === 0"
-      description="Belum ada data. Import file Excel Laporan Realisasi Per Dokumen untuk memulai."
+      description="Belum ada data. Kirim dari extension SIPD atau import Excel untuk memulai."
       :image-size="120"
     />
 
