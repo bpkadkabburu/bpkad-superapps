@@ -6,6 +6,10 @@ import { hashKey } from '../middleware/apiKey.js'
 
 const router = new Hono()
 router.use('*', requireAuth)
+router.use('*', async (c, next) => {
+  if (c.get('user').role !== 'superadmin') return c.json({ error: 'Forbidden' }, 403)
+  await next()
+})
 
 // GET / — daftar key (tanpa key asli, hanya prefix + status)
 router.get('/', async (c) => {
