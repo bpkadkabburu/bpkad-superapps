@@ -181,6 +181,7 @@ function formatDate(dateStr) {
       title="API Key Berhasil Dibuat"
       width="520px"
       :close-on-click-modal="false"
+      :close-on-press-escape="false"
       :show-close="false"
     >
       <el-alert
