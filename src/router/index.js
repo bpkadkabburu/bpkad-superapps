@@ -20,6 +20,12 @@ const routes = [
         component: () => import('../views/SelectYearView.vue')
       },
       {
+        path: 'api-keys',
+        name: 'ApiKeys',
+        component: () => import('../views/ApiKeysView.vue'),
+        meta: { requiresSuperadmin: true }
+      },
+      {
         path: 'tahun/:tahun',
         children: [
           {

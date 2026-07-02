@@ -24,6 +24,10 @@ function gantiTahun() {
   tahunStore.reset()
   router.push({ name: 'SelectYear' })
 }
+
+function bukaApiKeys() {
+  router.push({ name: 'ApiKeys' })
+}
 </script>
 
 <template>
@@ -47,6 +51,7 @@ function gantiTahun() {
         <el-tag size="small" :type="auth.isSuperadmin ? 'danger' : 'info'">
           {{ auth.isSuperadmin ? 'Superadmin' : 'User' }}
         </el-tag>
+        <el-button v-if="auth.isSuperadmin" size="small" plain @click="bukaApiKeys">Kelola API Key</el-button>
         <el-button v-if="tahun" size="small" plain @click="gantiTahun">Ganti Tahun</el-button>
         <el-button size="small" @click="logout">Logout</el-button>
       </div>
