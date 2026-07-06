@@ -8,6 +8,7 @@ import tahunAnggaranRoutes from './routes/tahunAnggaran.js'
 import anggaranRekapRoutes from './routes/anggaranRekap.js'
 import dokumenRealisasiRoutes from './routes/dokumenRealisasi.js'
 import skpdRoutes from './routes/skpd.js'
+import subKegiatanRoutes from './routes/subKegiatan.js'
 import rekapRealisasiRoutes from './routes/rekapRealisasi.js'
 import apiKeysRoutes from './routes/apiKeys.js'
 import syncRoutes from './routes/sync.js'
@@ -25,6 +26,7 @@ app.route('/api/api-keys', apiKeysRoutes)
 app.route('/api/sync', syncRoutes)
 app.route('/api/tahun-anggaran', tahunAnggaranRoutes)
 app.route('/api/referensi/skpd', skpdRoutes)
+app.route('/api/referensi/sub-kegiatan', subKegiatanRoutes)
 app.route('/api/referensi/subkegiatan-pmk', subkegiatanPmkRoutes)
 app.route('/api/sumber-data/anggaran', anggaranRekapRoutes)
 app.route('/api/sumber-data/dokumen-realisasi', dokumenRealisasiRoutes)

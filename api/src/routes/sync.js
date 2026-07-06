@@ -77,6 +77,81 @@ export const syncSkpd = async (c) => {
 }
 
 // ---------------------------------------------------------------------------
+// Sub Kegiatan (referensi hierarki urusan/program/kegiatan)
+// ---------------------------------------------------------------------------
+export const syncSubKegiatan = async (c) => {
+  const { data, tahun } = await c.req.json()
+  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
+  if (!Array.isArray(data) || data.length === 0)
+    return c.json({ error: 'data tidak boleh kosong' }, 400)
+
+  const tahun_id = await resolveTahunId(tahun)
+  if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
+
+  // Extension login per-unit, jadi satu payload cuma berisi data unit yang
+  // sedang login. Hapus hanya baris unit-unit yang ada di payload ini, biar
+  // data unit lain yang sudah tersinkron untuk tahun ini tidak ikut terhapus.
+  const idUnits = [...new Set(data.map(row => row.id_unit))]
+
+  const conn = await db.getConnection()
+  try {
+    await conn.beginTransaction()
+    await conn.query(
+      `DELETE FROM sub_kegiatan WHERE tahun_id = ? AND id_unit IN (${idUnits.map(() => '?').join(', ')})`,
+      [tahun_id, ...idUnits]
+    )
+
+    const BATCH = 500
+    for (let i = 0; i < data.length; i += BATCH) {
+      const chunk = data.slice(i, i + BATCH)
+      const placeholders = chunk.map(() => '(UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
+      const values = chunk.flatMap(row => [
+        tahun_id,
+        row.id_unit ?? null,
+        row.id_skpd ?? null,
+        row.kode_skpd ?? null,
+        row.nama_skpd ?? null,
+        row.id_sub_skpd ?? null,
+        row.kode_sub_skpd ?? null,
+        row.nama_sub_skpd ?? null,
+        row.id_urusan ?? null,
+        row.kode_urusan ?? null,
+        row.nama_urusan ?? null,
+        row.id_bidang_urusan ?? null,
+        row.kode_bidang_urusan ?? null,
+        row.nama_bidang_urusan ?? null,
+        row.id_program ?? null,
+        row.kode_program ?? null,
+        row.nama_program ?? null,
+        row.id_giat ?? null,
+        row.kode_giat ?? null,
+        row.nama_giat ?? null,
+        row.id_sub_giat ?? null,
+        row.kode_sub_giat ?? null,
+        row.nama_sub_giat ?? null,
+      ])
+      await conn.query(
+        `INSERT INTO sub_kegiatan
+          (id, tahun_id, id_unit, id_skpd, kode_skpd, nama_skpd, id_sub_skpd, kode_sub_skpd, nama_sub_skpd,
+           id_urusan, kode_urusan, nama_urusan, id_bidang_urusan, kode_bidang_urusan, nama_bidang_urusan,
+           id_program, kode_program, nama_program, id_giat, kode_giat, nama_giat,
+           id_sub_giat, kode_sub_giat, nama_sub_giat)
+         VALUES ${placeholders}`,
+        values
+      )
+    }
+
+    await conn.commit()
+    return c.json({ success: true, count: data.length })
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Subkegiatan PMK
 // ---------------------------------------------------------------------------
 export const syncSubkegiatanPmk = async (c) => {
@@ -377,6 +452,7 @@ export const syncDokumenRealisasi = async (c) => {
 const router = new Hono()
 router.use('*', requireApiKey)
 router.post('/skpd', syncSkpd)
+router.post('/sub-kegiatan', syncSubKegiatan)
 router.post('/subkegiatan-pmk', syncSubkegiatanPmk)
 router.post('/anggaran', syncAnggaran)
 router.post('/dokumen-realisasi', syncDokumenRealisasi)

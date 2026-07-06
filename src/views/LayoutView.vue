@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useTahunStore } from '../stores/tahun'
-import { HomeFilled, DataAnalysis, Document, FolderOpened } from '@element-plus/icons-vue'
+import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -90,6 +90,10 @@ function bukaApiKeys() {
               <el-icon><Document /></el-icon>
               <span>SKPD</span>
             </el-menu-item>
+            <el-menu-item v-if="skpdSynced" :index="`/tahun/${tahun}/referensi/sub-kegiatan`">
+              <el-icon><Document /></el-icon>
+              <span>Sub Kegiatan</span>
+            </el-menu-item>
             <el-menu-item v-if="skpdSynced" :index="`/tahun/${tahun}/referensi/subkegiatan-pmk`">
               <el-icon><Document /></el-icon>
               <span>Subkegiatan PMK</span>
@@ -115,6 +119,11 @@ function bukaApiKeys() {
             <el-menu-item :index="`/tahun/${tahun}/rekap-realisasi`">
               <el-icon><DataAnalysis /></el-icon>
               <span>Rekap Realisasi</span>
+            </el-menu-item>
+
+            <el-menu-item :index="`/tahun/${tahun}/validasi-subkegiatan`">
+              <el-icon><WarningFilled /></el-icon>
+              <span>Validasi Sub Kegiatan</span>
             </el-menu-item>
           </template>
         </el-menu>

@@ -153,11 +153,11 @@ async function clearData() {
           dan kirim JSON apa adanya ke endpoint berikut:
         </p>
         <el-tag type="info" style="margin-top:8px; font-family:monospace; font-size:12px;">
-          POST /api/sumber-data/dokumen-realisasi
+          POST /api/sync/dokumen-realisasi
         </el-tag>
         <p style="margin:8px 0 0; font-size:12px; color:#909399;">
           Body: <code>&#123; "tahun": {{ tahun }}, "data": [ ...baris JSON SIPD... ] &#125;</code>
-          &nbsp;&bull;&nbsp; Authorization: Bearer &lt;token&gt;
+          &nbsp;&bull;&nbsp; X-API-Key: &lt;api key&gt;
         </p>
         <p style="margin:6px 0 0; font-size:12px; color:#909399;">
           Alternatif: tombol <strong>Import Excel</strong> di kanan atas untuk file Laporan Realisasi Per Dokumen.

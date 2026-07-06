@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import ExcelJS from 'exceljs'
-import { Upload, Delete, Search } from '@element-plus/icons-vue'
+import { Upload, Delete, Search, Download } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../utils/api.js'
 
@@ -10,6 +10,7 @@ const rawData = ref([])
 const search = ref('')
 const currentPage = ref(1)
 const pageSize = ref(50)
+const exporting = ref(false)
 const route = useRoute()
 const tahun = computed(() => route.params.tahun)
 
@@ -98,6 +99,74 @@ async function handleFileImport(uploadFile) {
   return false
 }
 
+async function exportExcel() {
+  if (!rawData.value.length) {
+    ElMessage.warning('Tidak ada data Subkegiatan PMK untuk diekspor')
+    return
+  }
+
+  exporting.value = true
+  try {
+    const { data } = await api.get('/referensi/sub-kegiatan', { params: { tahun: tahun.value } })
+    const subKegiatanList = data.data || []
+
+    // Kode subkegiatan PMK bisa dipakai lebih dari satu dinas, satu kode -> banyak nama dinas.
+    const dinasByKode = new Map()
+    for (const row of subKegiatanList) {
+      const kode = String(row.kode_sub_giat || '').trim()
+      if (!kode || !row.nama_skpd) continue
+      if (!dinasByKode.has(kode)) dinasByKode.set(kode, new Set())
+      dinasByKode.get(kode).add(row.nama_skpd)
+    }
+
+    const rows = []
+    for (const item of rawData.value) {
+      const kode = String(item.kode_subkegiatan || '').trim()
+      const dinasSet = dinasByKode.get(kode)
+      if (dinasSet && dinasSet.size) {
+        for (const nama_dinas of dinasSet) {
+          rows.push({ ...item, nama_dinas })
+        }
+      } else {
+        rows.push({ ...item, nama_dinas: '-' })
+      }
+    }
+
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet('Subkegiatan PMK')
+    sheet.columns = [
+      { header: 'Kode Subkegiatan', key: 'kode_subkegiatan', width: 22 },
+      { header: 'Subkegiatan', key: 'subkegiatan', width: 55 },
+      { header: 'Bidang', key: 'bidang', width: 20 },
+      { header: 'Nama Dinas', key: 'nama_dinas', width: 45 },
+    ]
+    const hdr = sheet.getRow(1)
+    hdr.font = { bold: true, name: 'Calibri', size: 10 }
+    hdr.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } }
+    for (const row of rows) {
+      sheet.addRow(row).font = { name: 'Calibri', size: 10 }
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer()
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `Subkegiatan PMK - Tahun ${tahun.value}.xlsx`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+
+    ElMessage.success(`${rows.length} baris berhasil diekspor`)
+  } catch (err) {
+    console.error(err)
+    ElMessage.error('Gagal ekspor: ' + (err.message || ''))
+  } finally {
+    exporting.value = false
+  }
+}
+
 async function clearData() {
   try {
     await ElMessageBox.confirm(
@@ -133,6 +202,15 @@ async function clearData() {
         >
           <el-button type="primary" :icon="Upload">Import Excel</el-button>
         </el-upload>
+        <el-button
+          type="success"
+          :icon="Download"
+          :loading="exporting"
+          :disabled="rawData.length === 0"
+          @click="exportExcel"
+        >
+          Export Excel
+        </el-button>
         <el-button type="danger" :icon="Delete" :disabled="rawData.length === 0" @click="clearData">
           Hapus Semua
         </el-button>

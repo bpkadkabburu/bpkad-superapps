@@ -42,6 +42,12 @@ const routes = [
                 component: () => import('../views/referensi/SkpdView.vue')
               },
               {
+                path: 'sub-kegiatan',
+                name: 'ReferensiSubKegiatan',
+                component: () => import('../views/referensi/SubKegiatanView.vue'),
+                meta: { requiresSkpdSync: true }
+              },
+              {
                 path: 'subkegiatan-pmk',
                 name: 'SubkegiatanPMK',
                 component: () => import('../views/SubkegiatanPMKView.vue'),
@@ -70,6 +76,12 @@ const routes = [
             path: 'rekap-realisasi',
             name: 'RekapRealisasi',
             component: () => import('../views/RekapRealisasiView.vue'),
+            meta: { requiresSkpdSync: true }
+          },
+          {
+            path: 'validasi-subkegiatan',
+            name: 'ValidasiSubKegiatan',
+            component: () => import('../views/ValidasiSubKegiatanView.vue'),
             meta: { requiresSkpdSync: true }
           }
         ]

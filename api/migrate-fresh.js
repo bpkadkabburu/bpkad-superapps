@@ -9,6 +9,7 @@ const DROP_ORDER = [
   'dokumen_realisasi',
   'anggaran_rekap',
   'subkegiatan_pmk',
+  'sub_kegiatan',
   'realisasi',
   'skpd',
   'tahun_anggaran',

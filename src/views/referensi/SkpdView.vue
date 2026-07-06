@@ -109,12 +109,12 @@ function formatDate(dateStr) {
           Gunakan <strong>browser extension SIPD</strong> untuk menarik data SKPD dan kirim ke endpoint berikut:
         </p>
         <el-tag type="info" style="margin-top: 8px; font-family: monospace; font-size: 12px;">
-          POST /api/referensi/skpd
+          POST /api/sync/skpd
         </el-tag>
         <p style="margin: 8px 0 0; font-size: 12px; color: #909399;">
           Body: <code>&#123; "tahun": {{ tahun }}, "data": [...] &#125;</code>
           &nbsp;&bull;&nbsp;
-          Authorization: Bearer &lt;token&gt;
+          X-API-Key: &lt;api key&gt;
         </p>
         <p style="margin: 6px 0 0; font-size: 12px; color: #909399;">
           Menu lainnya akan tersedia setelah sinkronisasi berhasil.

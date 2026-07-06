@@ -181,7 +181,9 @@ router.get('/', async (c) => {
 
   function toArray(node) {
     return Array.from(node.children.values())
-      .sort((a, b) => String(a.nama).localeCompare(String(b.nama), 'id'))
+      .sort((a, b) => a.badge === 'SKPD'
+        ? String(a.kode).localeCompare(String(b.kode), 'id', { numeric: true })
+        : String(a.nama).localeCompare(String(b.nama), 'id'))
       .map(child => ({
         kode: child.kode,
         nama: child.nama,
@@ -197,6 +199,79 @@ router.get('/', async (c) => {
   }
 
   return c.json({ data: toArray(root), totals: root.totals })
+})
+
+// Validasi Sub Kegiatan per SKPD: yang ditarik ke rekap (anggaran_rekap + dokumen_realisasi)
+// dibandingkan satu-satu terhadap referensi/sub_kegiatan. Mengembalikan detail kode yang
+// hanya ada di salah satu sisi, bukan cuma total, supaya kelihatan sub kegiatan apa saja
+// yang beda.
+router.get('/validasi-subkegiatan', async (c) => {
+  const tahun = c.req.query('tahun')
+  if (!tahun) return c.json({ data: [] })
+
+  const [taRows] = await db.query('SELECT id FROM tahun_anggaran WHERE tahun = ?', [tahun])
+  const tahun_id = taRows[0]?.id
+  if (!tahun_id) return c.json({ data: [] })
+
+  const [refRows] = await db.query(
+    `SELECT kode_skpd, nama_skpd, kode_sub_giat AS kode_sub_kegiatan, nama_sub_giat AS nama_sub_kegiatan
+     FROM sub_kegiatan
+     WHERE tahun_id = ?`,
+    [tahun_id]
+  )
+
+  const [rekapRows] = await db.query(
+    `SELECT kode_skpd, nama_skpd, kode_sub_kegiatan, nama_sub_kegiatan FROM anggaran_rekap WHERE tahun_id = ?
+     UNION
+     SELECT kode_skpd, nama_skpd, kode_sub_kegiatan, nama_sub_kegiatan FROM dokumen_realisasi WHERE tahun_id = ?`,
+    [tahun_id, tahun_id]
+  )
+
+  const refKeys = new Set(refRows.map(r => `${r.kode_skpd}||${r.kode_sub_kegiatan}`))
+  const rekapKeys = new Set(rekapRows.map(r => `${r.kode_skpd}||${r.kode_sub_kegiatan}`))
+
+  const bySkpd = new Map()
+  function getEntry(kode_skpd, nama_skpd) {
+    let entry = bySkpd.get(kode_skpd)
+    if (!entry) {
+      entry = {
+        kode_skpd, nama_skpd,
+        rekap: 0, referensi: 0,
+        hilangDiRekap: [], // ada di referensi, tidak ditemukan di anggaran_rekap/dokumen_realisasi
+        hilangDiReferensi: [], // ada di rekap, tidak ditemukan di referensi/sub_kegiatan
+      }
+      bySkpd.set(kode_skpd, entry)
+    }
+    if (!entry.nama_skpd) entry.nama_skpd = nama_skpd
+    return entry
+  }
+
+  for (const r of refRows) {
+    const entry = getEntry(r.kode_skpd, r.nama_skpd)
+    entry.referensi += 1
+    if (!rekapKeys.has(`${r.kode_skpd}||${r.kode_sub_kegiatan}`)) {
+      entry.hilangDiRekap.push({ kode: r.kode_sub_kegiatan, nama: r.nama_sub_kegiatan })
+    }
+  }
+
+  for (const r of rekapRows) {
+    const entry = getEntry(r.kode_skpd, r.nama_skpd)
+    entry.rekap += 1
+    if (!refKeys.has(`${r.kode_skpd}||${r.kode_sub_kegiatan}`)) {
+      entry.hilangDiReferensi.push({ kode: r.kode_sub_kegiatan, nama: r.nama_sub_kegiatan })
+    }
+  }
+
+  const sortByKode = (a, b) => String(a.kode).localeCompare(String(b.kode), 'id', { numeric: true })
+  for (const entry of bySkpd.values()) {
+    entry.hilangDiRekap.sort(sortByKode)
+    entry.hilangDiReferensi.sort(sortByKode)
+  }
+
+  const data = Array.from(bySkpd.values())
+    .sort((a, b) => String(a.kode_skpd).localeCompare(String(b.kode_skpd), 'id', { numeric: true }))
+
+  return c.json({ data })
 })
 
 export default router
