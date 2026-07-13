@@ -208,6 +208,7 @@ async function clearData() {
             <span style="font-family:monospace; font-size:11px; color:#606266;">{{ row.kode_rekening }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="Nama Rekening" prop="nama_rekening" min-width="220" show-overflow-tooltip />
         <el-table-column label="Jenis" prop="jenis_dokumen" width="70" align="center">
           <template #default="{ row }">
             <el-tag size="small" type="info">{{ row.jenis_dokumen }}</el-tag>

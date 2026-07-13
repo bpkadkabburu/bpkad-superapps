@@ -41,15 +41,22 @@ function filterTree(list) {
 
   const result = []
   for (const node of list) {
-    const filteredChildren = filterTree(node.children || [])
-
     const matchSearch = !q
       || (node.badge === 'Sub Kegiatan' && String(node.kode).toLowerCase() === q)
     const matchBelum = !belumSp2dOnly.value || (node.belumSp2d || 0) > 0
 
     const selfMatch = matchSearch && matchBelum
 
-    if (selfMatch || filteredChildren.length) {
+    // Node sendiri cocok (mis. Sub Kegiatan yang dicari) -> tampilkan lengkap
+    // dengan SELURUH keturunannya (Belanja) supaya bisa dilihat saat di-expand.
+    if (selfMatch) {
+      result.push({ ...node })
+      continue
+    }
+
+    // Kalau tidak, telusuri anak; jalur induk ikut tampil bila ada keturunan cocok.
+    const filteredChildren = filterTree(node.children || [])
+    if (filteredChildren.length) {
       result.push({ ...node, children: filteredChildren })
     }
   }

@@ -187,6 +187,12 @@ async function clearData() {
             <span v-else style="color:#c0c4cc;">—</span>
           </template>
         </el-table-column>
+        <el-table-column label="Nama Paket/Kelompok" prop="nama_paket_kelompok" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.nama_paket_kelompok">{{ row.nama_paket_kelompok }}</span>
+            <span v-else style="color:#c0c4cc;">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="Kode Rekening" prop="kode_rekening" width="170">
           <template #default="{ row }">
             <span style="font-family:monospace; font-size:11px; color:#606266;">{{ row.kode_rekening }}</span>

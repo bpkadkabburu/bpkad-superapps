@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useTahunStore } from '../stores/tahun'
-import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled } from '@element-plus/icons-vue'
+import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled, TrendCharts } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -119,6 +119,11 @@ function bukaApiKeys() {
             <el-menu-item :index="`/tahun/${tahun}/rekap-realisasi`">
               <el-icon><DataAnalysis /></el-icon>
               <span>Rekap Realisasi</span>
+            </el-menu-item>
+
+            <el-menu-item :index="`/tahun/${tahun}/efisiensi`">
+              <el-icon><TrendCharts /></el-icon>
+              <span>Efisiensi Belanja</span>
             </el-menu-item>
 
             <el-menu-item :index="`/tahun/${tahun}/validasi-subkegiatan`">

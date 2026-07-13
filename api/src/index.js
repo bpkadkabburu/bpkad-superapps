@@ -10,6 +10,7 @@ import dokumenRealisasiRoutes from './routes/dokumenRealisasi.js'
 import skpdRoutes from './routes/skpd.js'
 import subKegiatanRoutes from './routes/subKegiatan.js'
 import rekapRealisasiRoutes from './routes/rekapRealisasi.js'
+import efisiensiRoutes from './routes/efisiensi.js'
 import apiKeysRoutes from './routes/apiKeys.js'
 import syncRoutes from './routes/sync.js'
 
@@ -31,6 +32,7 @@ app.route('/api/referensi/subkegiatan-pmk', subkegiatanPmkRoutes)
 app.route('/api/sumber-data/anggaran', anggaranRekapRoutes)
 app.route('/api/sumber-data/dokumen-realisasi', dokumenRealisasiRoutes)
 app.route('/api/rekap-realisasi', rekapRealisasiRoutes)
+app.route('/api/efisiensi', efisiensiRoutes)
 
 serve({ fetch: app.fetch, port: 3001 }, () => {
   console.log('API running on http://localhost:3001')
