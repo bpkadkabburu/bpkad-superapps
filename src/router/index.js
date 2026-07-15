@@ -79,6 +79,18 @@ const routes = [
             meta: { requiresSkpdSync: true }
           },
           {
+            path: 'rekap-anggaran',
+            name: 'RekapAnggaran',
+            component: () => import('../views/RekapAnggaranView.vue'),
+            meta: { requiresSkpdSync: true }
+          },
+          {
+            path: 'rekap-pmk',
+            name: 'RekapPMK',
+            component: () => import('../views/RekapPMKView.vue'),
+            meta: { requiresSkpdSync: true }
+          },
+          {
             path: 'efisiensi',
             name: 'EfisiensiBelanja',
             component: () => import('../views/EfisiensiBelanjaView.vue'),

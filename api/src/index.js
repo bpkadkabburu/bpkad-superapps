@@ -13,6 +13,7 @@ import rekapRealisasiRoutes from './routes/rekapRealisasi.js'
 import efisiensiRoutes from './routes/efisiensi.js'
 import apiKeysRoutes from './routes/apiKeys.js'
 import syncRoutes from './routes/sync.js'
+import mappingRoutes from './routes/mapping.js'
 
 const app = new Hono()
 
@@ -33,6 +34,7 @@ app.route('/api/sumber-data/anggaran', anggaranRekapRoutes)
 app.route('/api/sumber-data/dokumen-realisasi', dokumenRealisasiRoutes)
 app.route('/api/rekap-realisasi', rekapRealisasiRoutes)
 app.route('/api/efisiensi', efisiensiRoutes)
+app.route('/api/mapping-pmk', mappingRoutes)
 
 serve({ fetch: app.fetch, port: 3001 }, () => {
   console.log('API running on http://localhost:3001')

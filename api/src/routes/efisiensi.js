@@ -58,6 +58,16 @@ function kategoriSumberDana(kode) {
   return 'LAINNYA'
 }
 
+// Rekening yang tidak boleh dijadikan kandidat efisiensi: belanja langganan
+// telepon, air, listrik, dan internet/TV (kebutuhan operasional tetap yang
+// tidak bisa dipangkas).
+const NON_EFISIENSI = new Set([
+  '5.1.02.02.001.00059', // Belanja Tagihan Telepon
+  '5.1.02.02.001.00060', // Belanja Tagihan Air
+  '5.1.02.02.001.00061', // Belanja Tagihan Listrik
+  '5.1.02.02.001.00063', // Belanja Kawat/Faksimili/Internet/TV Berlangganan
+])
+
 function jenisKode(kodeRekening) {
   return String(kodeRekening || '').split('.').slice(0, 3).join('.')
 }
@@ -153,6 +163,9 @@ router.get('/', async (c) => {
   const totals = emptyAgg()
 
   for (const leaf of leaves.values()) {
+    // Rekening operasional tetap (telepon/air/listrik/internet) bukan kandidat efisiensi.
+    if (NON_EFISIENSI.has(String(leaf.row.kode_rekening || ''))) continue
+
     const parts = [] // { cat, pagu, spp, sp2d }
     if (leaf.sdPagu.size) {
       for (const [cat, paguCat] of leaf.sdPagu) {

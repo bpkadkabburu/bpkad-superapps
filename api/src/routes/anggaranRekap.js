@@ -24,6 +24,29 @@ router.get('/', async (c) => {
   return c.json({ data: rows })
 })
 
+// Rekap pagu anggaran per sumber dana (group by), diurut dari terbesar.
+router.get('/rekap-sumber-dana', async (c) => {
+  const tahun = c.req.query('tahun')
+  if (!tahun) return c.json({ data: [], total: 0 })
+
+  const [rows] = await db.query(
+    `SELECT
+       ar.kode_sumber_dana AS kode,
+       COALESCE(NULLIF(TRIM(ar.nama_sumber_dana), ''), '(Tanpa Sumber Dana)') AS nama,
+       SUM(ar.pagu) AS pagu,
+       COUNT(*) AS jumlah_baris
+     FROM anggaran_rekap ar
+     INNER JOIN tahun_anggaran ta ON ar.tahun_id = ta.id
+     WHERE ta.tahun = ?
+     GROUP BY ar.kode_sumber_dana, nama
+     ORDER BY pagu DESC`,
+    [tahun]
+  )
+
+  const total = rows.reduce((sum, r) => sum + Number(r.pagu || 0), 0)
+  return c.json({ data: rows, total })
+})
+
 router.delete('/', async (c) => {
   const tahun = c.req.query('tahun')
   if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)

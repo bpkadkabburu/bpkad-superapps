@@ -1,4 +1,6 @@
 // api/src/routes/mapping.js
+// Rekap PMK: kompilasi (read-only) dari Referensi Subkegiatan PMK (bidang)
+// digabung dengan Anggaran Rekap (pagu, sumber dana, OPD). Tidak menyimpan apa pun.
 import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
@@ -7,86 +9,46 @@ const router = new Hono()
 router.use('*', requireAuth)
 
 router.get('/', async (c) => {
-  const user = c.get('user')
   const tahun = c.req.query('tahun')
-  if (!tahun) return c.json({ pagu_per_bidang: {}, results: [] })
+  if (!tahun) return c.json({ results: [] })
+
+  // Gabung per OPD (sub unit) -> sub kegiatan -> sumber dana, jumlahkan pagu.
+  // Hanya sub kegiatan yang masuk referensi PMK (INNER JOIN).
+  // Aturan lama dipertahankan: bidang "kesehatan" pada OPD "puskesmas" dikecualikan.
   const [rows] = await db.query(
-    `SELECT m.pagu_per_bidang, m.results FROM mapping_pmk m
-     INNER JOIN tahun_anggaran ta ON m.tahun_id = ta.id
-     WHERE m.user_id = ? AND ta.tahun = ?`,
-    [user.id, tahun]
+    `SELECT
+       ar.kode_sub_kegiatan            AS kode,
+       MAX(ar.nama_sub_kegiatan)       AS subKegiatan,
+       ar.kode_sumber_dana             AS kodeSumberDana,
+       MAX(ar.nama_sumber_dana)        AS sumberDana,
+       SUM(ar.pagu)                    AS paguIndikatif,
+       ar.nama_sub_unit                AS namaOPD,
+       pmk.kode_sub_kegiatan           AS kodePMK,
+       pmk.bidang                      AS bidang
+     FROM anggaran_rekap ar
+     INNER JOIN tahun_anggaran ta ON ar.tahun_id = ta.id
+     INNER JOIN subkegiatan_pmk pmk
+       ON pmk.tahun_id = ar.tahun_id
+      AND pmk.kode_sub_kegiatan = ar.kode_sub_kegiatan
+     WHERE ta.tahun = ?
+       AND NOT (LOWER(pmk.bidang) LIKE '%kesehatan%' AND LOWER(ar.nama_sub_unit) LIKE '%puskesmas%')
+     GROUP BY ar.nama_sub_unit, ar.kode_sub_kegiatan, ar.kode_sumber_dana, pmk.bidang, pmk.kode_sub_kegiatan
+     ORDER BY pmk.bidang, ar.nama_sub_unit, ar.kode_sub_kegiatan`,
+    [tahun]
   )
-  return c.json({
-    pagu_per_bidang: rows[0]?.pagu_per_bidang || {},
-    results: rows[0]?.results || [],
-  })
-})
 
-router.put('/pagu', async (c) => {
-  const user = c.get('user')
-  const { pagu_per_bidang, tahun } = await c.req.json()
-  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
-  const [taRows] = await db.query(
-    'SELECT id FROM tahun_anggaran WHERE tahun = ?', [tahun]
-  )
-  const tahun_id = taRows[0]?.id
-  if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
-  const [existing] = await db.query(
-    'SELECT id FROM mapping_pmk WHERE user_id = ? AND tahun_id = ?',
-    [user.id, tahun_id]
-  )
-  if (existing[0]) {
-    await db.query(
-      'UPDATE mapping_pmk SET pagu_per_bidang = ?, updated_at = NOW() WHERE user_id = ? AND tahun_id = ?',
-      [JSON.stringify(pagu_per_bidang), user.id, tahun_id]
-    )
-  } else {
-    await db.query(
-      'INSERT INTO mapping_pmk (user_id, tahun_id, pagu_per_bidang, results) VALUES (?, ?, ?, ?)',
-      [user.id, tahun_id, JSON.stringify(pagu_per_bidang), JSON.stringify([])]
-    )
-  }
-  return c.json({ success: true })
-})
+  const results = rows.map(r => ({
+    kode: r.kode,
+    subKegiatan: r.subKegiatan || '-',
+    kodeSumberDana: r.kodeSumberDana || '-',
+    sumberDana: r.sumberDana || '-',
+    paguIndikatif: Number(r.paguIndikatif || 0),
+    namaOPD: r.namaOPD || '-',
+    kodePMK: r.kodePMK || '-',
+    bidang: r.bidang || '-',
+  }))
 
-router.put('/results', async (c) => {
-  const user = c.get('user')
-  const { results, tahun } = await c.req.json()
-  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
-  const [taRows] = await db.query(
-    'SELECT id FROM tahun_anggaran WHERE tahun = ?', [tahun]
-  )
-  const tahun_id = taRows[0]?.id
-  if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
-  const [existing] = await db.query(
-    'SELECT id FROM mapping_pmk WHERE user_id = ? AND tahun_id = ?',
-    [user.id, tahun_id]
-  )
-  if (existing[0]) {
-    await db.query(
-      'UPDATE mapping_pmk SET results = ?, updated_at = NOW() WHERE user_id = ? AND tahun_id = ?',
-      [JSON.stringify(results), user.id, tahun_id]
-    )
-  } else {
-    await db.query(
-      'INSERT INTO mapping_pmk (user_id, tahun_id, pagu_per_bidang, results) VALUES (?, ?, ?, ?)',
-      [user.id, tahun_id, JSON.stringify({}), JSON.stringify(results)]
-    )
-  }
-  return c.json({ success: true })
-})
-
-router.delete('/', async (c) => {
-  const user = c.get('user')
-  const tahun = c.req.query('tahun')
-  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
-  await db.query(
-    `DELETE m FROM mapping_pmk m
-     INNER JOIN tahun_anggaran ta ON m.tahun_id = ta.id
-     WHERE m.user_id = ? AND ta.tahun = ?`,
-    [user.id, tahun]
-  )
-  return c.json({ success: true })
+  return c.json({ results })
 })
 
 export default router
