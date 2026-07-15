@@ -360,26 +360,6 @@ function toDbRow(row) {
   return out
 }
 
-const BULAN_ID = {
-  januari: 1, februari: 2, maret: 3, april: 4, mei: 5, juni: 6,
-  juli: 7, agustus: 8, september: 9, oktober: 10, november: 11, desember: 12,
-}
-
-// tanggal_dokumen bisa berupa ISO date dari SIPD ("2026-01-07T00:00:00Z")
-// atau teks bernama bulan Indonesia dari Excel lama ("7 Januari 2026").
-function parseBulan(tanggalDokumen) {
-  const s = String(tanggalDokumen ?? '').trim()
-  if (!s) return null
-  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (iso) {
-    const m = Number(iso[2])
-    return m >= 1 && m <= 12 ? m : null
-  }
-  const match = s.toLowerCase().match(/[a-z]+/)
-  if (!match) return null
-  return BULAN_ID[match[0]] ?? null
-}
-
 // Normalisasi nilai dari Excel: string kosong / "null" / "undefined" / "-"
 // harus jadi NULL beneran, bukan tersimpan sebagai teks literal.
 function normalizeVal(val) {
@@ -392,43 +372,37 @@ function normalizeVal(val) {
 }
 
 export const syncDokumenRealisasi = async (c) => {
-  const { data, tahun } = await c.req.json()
+  const { data, tahun, bulan } = await c.req.json()
   if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
+  const bulanNum = Number(bulan)
+  if (!Number.isInteger(bulanNum) || bulanNum < 1 || bulanNum > 12)
+    return c.json({ error: 'bulan wajib diisi (angka 1-12)' }, 400)
   if (!Array.isArray(data) || data.length === 0)
     return c.json({ error: 'data tidak boleh kosong' }, 400)
 
   const tahun_id = await resolveTahunId(tahun)
   if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
 
-  const rowsWithBulan = data.map(raw => {
-    const row = toDbRow(raw)
-    return { row, bulan: parseBulan(row.tanggal_dokumen) }
-  })
-  const bulanSet = [...new Set(rowsWithBulan.map(r => r.bulan))]
+  const rows = data.map(toDbRow)
 
   const conn = await db.getConnection()
   try {
     await conn.beginTransaction()
 
-    if (bulanSet.length) {
-      const bulanPlaceholders = bulanSet.filter(b => b !== null).map(() => '?').join(', ')
-      const bulanClause = bulanSet.includes(null)
-        ? (bulanPlaceholders ? `(bulan IS NULL OR bulan IN (${bulanPlaceholders}))` : 'bulan IS NULL')
-        : `bulan IN (${bulanPlaceholders})`
-      await conn.query(
-        `DELETE FROM dokumen_realisasi WHERE tahun_id = ? AND ${bulanClause}`,
-        [tahun_id, ...bulanSet.filter(b => b !== null)]
-      )
-    }
+    // Ganti seluruh data untuk tahun+bulan yang dikirim (bukan diturunkan dari tanggal_dokumen).
+    await conn.query(
+      `DELETE FROM dokumen_realisasi WHERE tahun_id = ? AND bulan = ?`,
+      [tahun_id, bulanNum]
+    )
 
     const placeholders = realisasiCols.map(() => '?').join(', ')
     const BATCH = 100
-    for (let i = 0; i < rowsWithBulan.length; i += BATCH) {
-      const chunk = rowsWithBulan.slice(i, i + BATCH)
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const chunk = rows.slice(i, i + BATCH)
       const rowPlaceholders = chunk.map(() => `(?, ?, ${placeholders})`).join(', ')
-      const values = chunk.flatMap(({ row, bulan }) => [
+      const values = chunk.flatMap(row => [
         tahun_id,
-        bulan,
+        bulanNum,
         ...realisasiCols.map(col => normalizeVal(row[col])),
       ])
       await conn.query(

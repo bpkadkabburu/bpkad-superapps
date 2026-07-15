@@ -10,8 +10,18 @@ const rawData = ref([])
 const search = ref('')
 const currentPage = ref(1)
 const pageSize = ref(50)
+const bulanImport = ref(null)
 const route = useRoute()
 const tahun = computed(() => route.params.tahun)
+
+const BULAN_OPTIONS = [
+  { value: 1, label: 'Januari' }, { value: 2, label: 'Februari' },
+  { value: 3, label: 'Maret' }, { value: 4, label: 'April' },
+  { value: 5, label: 'Mei' }, { value: 6, label: 'Juni' },
+  { value: 7, label: 'Juli' }, { value: 8, label: 'Agustus' },
+  { value: 9, label: 'September' }, { value: 10, label: 'Oktober' },
+  { value: 11, label: 'November' }, { value: 12, label: 'Desember' },
+]
 
 function getCellText(val) {
   if (val == null) return null
@@ -49,6 +59,11 @@ watch(search, () => { currentPage.value = 1 })
 
 async function handleFileImport(uploadFile) {
   if (!uploadFile.raw) return false
+
+  if (!bulanImport.value) {
+    ElMessage.warning('Pilih bulan terlebih dahulu sebelum import')
+    return false
+  }
 
   const buffer = await uploadFile.raw.arrayBuffer()
   const wb = new ExcelJS.Workbook()
@@ -89,10 +104,11 @@ async function handleFileImport(uploadFile) {
   }
 
   try {
-    await api.post('/sumber-data/dokumen-realisasi', { data: rows, tahun: tahun.value })
+    await api.post('/sumber-data/dokumen-realisasi', { data: rows, tahun: tahun.value, bulan: bulanImport.value })
     const { data } = await api.get('/sumber-data/dokumen-realisasi', { params: { tahun: tahun.value } })
     rawData.value = data.data
-    ElMessage.success(`${rows.length} dokumen realisasi berhasil diimport`)
+    const namaBulan = BULAN_OPTIONS.find(b => b.value === bulanImport.value)?.label ?? ''
+    ElMessage.success(`${rows.length} dokumen realisasi bulan ${namaBulan} berhasil diimport`)
   } catch {
     ElMessage.error('Gagal menyimpan data ke server')
   }
@@ -126,13 +142,25 @@ async function clearData() {
         </p>
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <el-select
+          v-model="bulanImport"
+          placeholder="Pilih bulan"
+          style="width:150px;"
+        >
+          <el-option
+            v-for="b in BULAN_OPTIONS"
+            :key="b.value"
+            :label="b.label"
+            :value="b.value"
+          />
+        </el-select>
         <el-upload
           :auto-upload="false"
           :show-file-list="false"
           accept=".xlsx,.xls"
           :on-change="handleFileImport"
         >
-          <el-button type="primary" :icon="Upload">Import Excel</el-button>
+          <el-button type="primary" :icon="Upload" :disabled="!bulanImport">Import Excel</el-button>
         </el-upload>
         <el-button type="danger" :icon="Delete" :disabled="rawData.length === 0" @click="clearData">
           Hapus Semua
@@ -156,8 +184,11 @@ async function clearData() {
           POST /api/sync/dokumen-realisasi
         </el-tag>
         <p style="margin:8px 0 0; font-size:12px; color:#909399;">
-          Body: <code>&#123; "tahun": {{ tahun }}, "data": [ ...baris JSON SIPD... ] &#125;</code>
+          Body: <code>&#123; "tahun": {{ tahun }}, "bulan": 3, "data": [ ...baris JSON SIPD... ] &#125;</code>
           &nbsp;&bull;&nbsp; X-API-Key: &lt;api key&gt;
+        </p>
+        <p style="margin:6px 0 0; font-size:12px; color:#e6a23c;">
+          <strong>bulan</strong> (1-12) wajib dikirim &mdash; menentukan periode data, tidak lagi diambil dari tanggal dokumen.
         </p>
         <p style="margin:6px 0 0; font-size:12px; color:#909399;">
           Alternatif: tombol <strong>Import Excel</strong> di kanan atas untuk file Laporan Realisasi Per Dokumen.
