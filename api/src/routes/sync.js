@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import db from '../db.js'
 import { requireApiKey } from '../middleware/apiKey.js'
+import { syncDokumenAklap } from './syncAklap.js'
 
 // Handler operasi TULIS untuk data SIPD. Dipakai lewat DUA pintu:
 //  - /api/sync/*            -> extension, dilindungi API key (router di file ini)
@@ -430,5 +431,6 @@ router.post('/sub-kegiatan', syncSubKegiatan)
 router.post('/subkegiatan-pmk', syncSubkegiatanPmk)
 router.post('/anggaran', syncAnggaran)
 router.post('/dokumen-realisasi', syncDokumenRealisasi)
+router.post('/dokumen-aklap', syncDokumenAklap)
 
 export default router

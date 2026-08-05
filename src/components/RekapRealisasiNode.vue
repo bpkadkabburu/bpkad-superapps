@@ -48,7 +48,7 @@ function persenSpp(node) {
   <div style="border: 1px solid #e4e7ed; border-radius: 4px; margin-bottom: 10px; background: #fff;">
     <!-- Header: toggle manual (bukan el-collapse) supaya anak lazy-mount -->
     <div
-      style="display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; cursor: pointer; user-select: none;"
+      style="display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; cursor: pointer;"
       @click="canExpand && (expanded = !expanded)"
     >
       <el-icon
@@ -92,6 +92,10 @@ function persenSpp(node) {
         <div style="text-align: right;">
           <div style="font-size: 10px; color: #e6a23c; font-weight: 600;">Realisasi SP2D</div>
           <div style="font-size: 12px; font-weight: 700; color: #303133; font-variant-numeric: tabular-nums;">{{ formatRp(node.totals.realisasiSp2d) }}</div>
+        </div>
+        <div style="text-align: right;">
+          <div style="font-size: 10px; color: #9254de; font-weight: 600;">Realisasi AKLAP</div>
+          <div style="font-size: 12px; font-weight: 700; color: #303133; font-variant-numeric: tabular-nums;">{{ formatRp(node.totals.realisasiAklap) }}</div>
         </div>
         <div style="width: 90px;">
           <div style="font-size: 10px; color: #909399;">{{ persenSpp(node) }}%</div>

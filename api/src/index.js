@@ -7,9 +7,12 @@ import subkegiatanPmkRoutes from './routes/subkegiatanPmk.js'
 import tahunAnggaranRoutes from './routes/tahunAnggaran.js'
 import anggaranRekapRoutes from './routes/anggaranRekap.js'
 import dokumenRealisasiRoutes from './routes/dokumenRealisasi.js'
+import dokumenAklapRoutes from './routes/dokumenAklap.js'
 import skpdRoutes from './routes/skpd.js'
 import subKegiatanRoutes from './routes/subKegiatan.js'
 import rekapRealisasiRoutes from './routes/rekapRealisasi.js'
+import rekapPerUrusanRoutes from './routes/rekapPerUrusan.js'
+import rekapPerProgramRoutes from './routes/rekapPerProgram.js'
 import efisiensiRoutes from './routes/efisiensi.js'
 import apiKeysRoutes from './routes/apiKeys.js'
 import syncRoutes from './routes/sync.js'
@@ -32,7 +35,10 @@ app.route('/api/referensi/sub-kegiatan', subKegiatanRoutes)
 app.route('/api/referensi/subkegiatan-pmk', subkegiatanPmkRoutes)
 app.route('/api/sumber-data/anggaran', anggaranRekapRoutes)
 app.route('/api/sumber-data/dokumen-realisasi', dokumenRealisasiRoutes)
+app.route('/api/sumber-data/dokumen-aklap', dokumenAklapRoutes)
 app.route('/api/rekap-realisasi', rekapRealisasiRoutes)
+app.route('/api/rekap-per-urusan', rekapPerUrusanRoutes)
+app.route('/api/rekap-per-program', rekapPerProgramRoutes)
 app.route('/api/efisiensi', efisiensiRoutes)
 app.route('/api/mapping-pmk', mappingRoutes)
 

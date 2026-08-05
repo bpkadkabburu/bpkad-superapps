@@ -10,7 +10,7 @@ const tahun = computed(() => route.params.tahun)
 
 const loading = ref(false)
 const nodes = ref([])
-const totals = ref({ pagu: 0, realisasiSpp: 0, realisasiSp2d: 0 })
+const totals = ref({ pagu: 0, realisasiSpp: 0, realisasiSp2d: 0, realisasiAklap: 0 })
 
 const search = ref('')
 const belumSp2dOnly = ref(false)
@@ -20,7 +20,7 @@ async function load() {
   try {
     const { data } = await api.get('/rekap-realisasi', { params: { tahun: tahun.value } })
     nodes.value = data.data
-    totals.value = data.totals || { pagu: 0, realisasiSpp: 0, realisasiSp2d: 0 }
+    totals.value = data.totals || { pagu: 0, realisasiSpp: 0, realisasiSp2d: 0, realisasiAklap: 0 }
   } catch {
     nodes.value = []
   } finally {
@@ -125,7 +125,7 @@ function formatRp(val) {
     </div>
 
     <el-card v-loading="loading" style="margin-bottom: 16px;">
-      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;">
         <div>
           <div style="font-size: 12px; color: #67c23a; font-weight: 600;">Total Anggaran</div>
           <div style="font-size: 20px; font-weight: 700;">{{ formatRp(totals.pagu) }}</div>
@@ -137,6 +137,10 @@ function formatRp(val) {
         <div>
           <div style="font-size: 12px; color: #e6a23c; font-weight: 600;">Total Realisasi SP2D</div>
           <div style="font-size: 20px; font-weight: 700;">{{ formatRp(totals.realisasiSp2d) }}</div>
+        </div>
+        <div>
+          <div style="font-size: 12px; color: #9254de; font-weight: 600;">Total Realisasi AKLAP</div>
+          <div style="font-size: 20px; font-weight: 700;">{{ formatRp(totals.realisasiAklap) }}</div>
         </div>
       </div>
     </el-card>

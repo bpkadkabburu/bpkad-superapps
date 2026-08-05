@@ -28,6 +28,14 @@ function gantiTahun() {
 function bukaApiKeys() {
   router.push({ name: 'ApiKeys' })
 }
+
+function goHome() {
+  if (tahunStore.activeTahun && tahunStore.skpdSyncedAt) {
+    router.push({ name: 'Home', params: { tahun: tahunStore.activeTahun } })
+  } else {
+    router.push({ name: 'SelectYear' })
+  }
+}
 </script>
 
 <template>
@@ -43,7 +51,10 @@ function bukaApiKeys() {
       z-index: 100;
     ">
       <div style="display: flex; align-items: center; gap: 12px;">
-        <span style="font-weight: 700; font-size: 16px; color: #303133;">BPKAD Superapps</span>
+        <span
+          style="font-weight: 700; font-size: 16px; color: #303133; cursor: pointer;"
+          @click="goHome"
+        >BPKAD Superapps</span>
         <el-tag v-if="tahun" type="success" size="small">TA {{ tahun }}</el-tag>
       </div>
       <div style="display: flex; align-items: center; gap: 12px;">
@@ -114,12 +125,30 @@ function bukaApiKeys() {
                 <el-icon><Document /></el-icon>
                 <span>Dokumen Realisasi</span>
               </el-menu-item>
+              <el-menu-item :index="`/tahun/${tahun}/sumber-data/dokumen-aklap`">
+                <el-icon><Document /></el-icon>
+                <span>Dokumen AKLAP</span>
+              </el-menu-item>
             </el-sub-menu>
 
-            <el-menu-item :index="`/tahun/${tahun}/rekap-realisasi`">
-              <el-icon><DataAnalysis /></el-icon>
-              <span>Rekap Realisasi</span>
-            </el-menu-item>
+            <el-sub-menu index="rekap-realisasi">
+              <template #title>
+                <el-icon><DataAnalysis /></el-icon>
+                <span>Rekap Realisasi</span>
+              </template>
+              <el-menu-item :index="`/tahun/${tahun}/rekap-realisasi`">
+                <el-icon><Document /></el-icon>
+                <span>Per SKPD</span>
+              </el-menu-item>
+              <el-menu-item :index="`/tahun/${tahun}/rekap-per-urusan`">
+                <el-icon><Document /></el-icon>
+                <span>Per Urusan</span>
+              </el-menu-item>
+              <el-menu-item :index="`/tahun/${tahun}/rekap-per-program`">
+                <el-icon><Document /></el-icon>
+                <span>Per Program</span>
+              </el-menu-item>
+            </el-sub-menu>
 
             <el-menu-item :index="`/tahun/${tahun}/rekap-anggaran`">
               <el-icon><PieChart /></el-icon>

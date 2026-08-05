@@ -1,8 +1,13 @@
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete, CopyDocument } from '@element-plus/icons-vue'
+import { Plus, Delete, CopyDocument, ArrowLeft } from '@element-plus/icons-vue'
+import { useTahunStore } from '../stores/tahun'
 import api from '../utils/api.js'
+
+const router = useRouter()
+const tahunStore = useTahunStore()
 
 const loading = ref(false)
 const keys = ref([])
@@ -90,6 +95,14 @@ async function revokeKey(row) {
   }
 }
 
+function goBack() {
+  if (tahunStore.activeTahun && tahunStore.skpdSyncedAt) {
+    router.push({ name: 'Home', params: { tahun: tahunStore.activeTahun } })
+  } else {
+    router.push({ name: 'SelectYear' })
+  }
+}
+
 function formatDate(dateStr) {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleString('id-ID', {
@@ -101,6 +114,10 @@ function formatDate(dateStr) {
 
 <template>
   <div>
+    <el-button :icon="ArrowLeft" text @click="goBack" style="margin-bottom: 12px;">
+      Kembali
+    </el-button>
+
     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
       <div>
         <h2 style="margin: 0; font-size: 18px; font-weight: 700; color: #303133;">

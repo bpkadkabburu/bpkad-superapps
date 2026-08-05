@@ -69,6 +69,12 @@ const routes = [
                 name: 'DokumenRealisasi',
                 component: () => import('../views/DokumenRealisasiView.vue'),
                 meta: { requiresSkpdSync: true }
+              },
+              {
+                path: 'dokumen-aklap',
+                name: 'DokumenAklap',
+                component: () => import('../views/DokumenAklapView.vue'),
+                meta: { requiresSkpdSync: true }
               }
             ]
           },
@@ -76,6 +82,18 @@ const routes = [
             path: 'rekap-realisasi',
             name: 'RekapRealisasi',
             component: () => import('../views/RekapRealisasiView.vue'),
+            meta: { requiresSkpdSync: true }
+          },
+          {
+            path: 'rekap-per-urusan',
+            name: 'RekapPerUrusan',
+            component: () => import('../views/RekapPerUrusanView.vue'),
+            meta: { requiresSkpdSync: true }
+          },
+          {
+            path: 'rekap-per-program',
+            name: 'RekapPerProgram',
+            component: () => import('../views/RekapPerProgramView.vue'),
             meta: { requiresSkpdSync: true }
           },
           {
