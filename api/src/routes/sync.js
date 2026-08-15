@@ -153,6 +153,62 @@ export const syncSubKegiatan = async (c) => {
 }
 
 // ---------------------------------------------------------------------------
+// Sumber Dana (referensi hierarki kode dana, mis. 1 / 1.1 / 1.1.01 / 1.1.01.01)
+// ---------------------------------------------------------------------------
+export const syncSumberDana = async (c) => {
+  const { data, tahun } = await c.req.json()
+  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
+  if (!Array.isArray(data) || data.length === 0)
+    return c.json({ error: 'data tidak boleh kosong' }, 400)
+
+  const tahun_id = await resolveTahunId(tahun)
+  if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
+
+  // Referensi tingkat daerah (bukan per unit) -> ganti seluruh data tahun ini.
+  const conn = await db.getConnection()
+  try {
+    await conn.beginTransaction()
+    await conn.query('DELETE FROM sumber_dana WHERE tahun_id = ?', [tahun_id])
+
+    const BATCH = 500
+    for (let i = 0; i < data.length; i += BATCH) {
+      const chunk = data.slice(i, i + BATCH)
+      const placeholders = chunk.map(() => '(UUID(), ?, ?, ?, ?, ?, ?, ?)').join(', ')
+      const values = chunk.flatMap(row => [
+        tahun_id,
+        row.id_dana ?? null,
+        trimOrNull(row.kode_dana),
+        // SIPD kerap mengirim nama dengan spasi ekstra ("DANA UMUM ") -> rapikan.
+        trimOrNull(row.nama_dana),
+        row.is_locked ?? 0,
+        trimOrNull(row.sumber_dana),
+        trimOrNull(row.set_input),
+      ])
+      await conn.query(
+        `INSERT INTO sumber_dana
+          (id, tahun_id, id_dana, kode_dana, nama_dana, is_locked, sumber_dana, set_input)
+         VALUES ${placeholders}`,
+        values
+      )
+    }
+
+    await conn.commit()
+    return c.json({ success: true, count: data.length })
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+}
+
+function trimOrNull(val) {
+  if (val === null || val === undefined) return null
+  const s = String(val).trim()
+  return s === '' ? null : s
+}
+
+// ---------------------------------------------------------------------------
 // Subkegiatan PMK
 // ---------------------------------------------------------------------------
 export const syncSubkegiatanPmk = async (c) => {
@@ -428,6 +484,7 @@ const router = new Hono()
 router.use('*', requireApiKey)
 router.post('/skpd', syncSkpd)
 router.post('/sub-kegiatan', syncSubKegiatan)
+router.post('/sumber-dana', syncSumberDana)
 router.post('/subkegiatan-pmk', syncSubkegiatanPmk)
 router.post('/anggaran', syncAnggaran)
 router.post('/dokumen-realisasi', syncDokumenRealisasi)

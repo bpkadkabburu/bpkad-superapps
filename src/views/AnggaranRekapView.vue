@@ -2,16 +2,27 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import ExcelJS from 'exceljs'
-import { Upload, Delete, Search } from '@element-plus/icons-vue'
+import { Upload, Delete, Search, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../utils/api.js'
 
 const rawData = ref([])
-const search = ref('')
+const loading = ref(false)
 const currentPage = ref(1)
 const pageSize = ref(50)
 const route = useRoute()
 const tahun = computed(() => route.params.tahun)
+
+// Filter aktif — semuanya dijalankan di sisi klien karena data satu tahun
+// memang sudah ditarik sekaligus saat halaman dibuka.
+const filter = ref({
+  kodeSkpd: '',
+  kodeSubKegiatan: '',
+  kodeRekening: '',
+  sumberDana: '',
+  paketKelompok: '',
+  q: '',
+})
 
 function getCellText(val) {
   if (val == null) return null
@@ -20,23 +31,66 @@ function getCellText(val) {
   return String(val)
 }
 
-onMounted(async () => {
+async function load() {
+  loading.value = true
   try {
     const { data } = await api.get('/sumber-data/anggaran', { params: { tahun: tahun.value } })
     rawData.value = data.data
   } catch {
     rawData.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(load)
+
+// Opsi dropdown diturunkan dari data yang ada, lengkap dengan jumlah barisnya
+// supaya kelihatan mana yang isinya banyak (mirip filter Dokumen Realisasi).
+function opsiDari(kodeKey, namaKey) {
+  const map = new Map()
+  for (const r of rawData.value) {
+    const kode = (r[kodeKey] || '').trim()
+    if (!kode) continue
+    const cur = map.get(kode) || { kode, nama: (r[namaKey] || '').trim(), jumlah: 0 }
+    cur.jumlah++
+    map.set(kode, cur)
+  }
+  return [...map.values()].sort((a, b) => a.kode.localeCompare(b.kode))
+}
+
+const opsi = computed(() => {
+  const sumberDana = new Map()
+  for (const r of rawData.value) {
+    const nama = (r.nama_sumber_dana || '').trim()
+    if (!nama) continue
+    const cur = sumberDana.get(nama) || { nama, kode: (r.kode_sumber_dana || '').trim(), jumlah: 0 }
+    cur.jumlah++
+    sumberDana.set(nama, cur)
+  }
+  return {
+    skpd: opsiDari('kode_sub_unit', 'nama_sub_unit'),
+    subKegiatan: opsiDari('kode_sub_kegiatan', 'nama_sub_kegiatan'),
+    rekening: opsiDari('kode_rekening', 'nama_rekening'),
+    paketKelompok: opsiDari('paket_kelompok', 'nama_paket_kelompok'),
+    sumberDana: [...sumberDana.values()].sort((a, b) => b.jumlah - a.jumlah),
   }
 })
 
 const filtered = computed(() => {
+  const f = filter.value
   // Multi-search: beberapa istilah dipisah koma = OR. Baris tampil jika cocok
   // salah satu istilah. mis. "0060, 0059, listrik" -> semua yang cocok muncul.
-  const terms = search.value.toLowerCase().split(',').map(t => t.trim()).filter(Boolean)
-  if (!terms.length) return rawData.value
+  const terms = f.q.toLowerCase().split(',').map(t => t.trim()).filter(Boolean)
   return rawData.value.filter(r => {
+    if (f.kodeSkpd && (r.kode_sub_unit || '').trim() !== f.kodeSkpd) return false
+    if (f.kodeSubKegiatan && (r.kode_sub_kegiatan || '').trim() !== f.kodeSubKegiatan) return false
+    if (f.kodeRekening && (r.kode_rekening || '').trim() !== f.kodeRekening) return false
+    if (f.paketKelompok && (r.paket_kelompok || '').trim() !== f.paketKelompok) return false
+    if (f.sumberDana && (r.nama_sumber_dana || '').trim() !== f.sumberDana) return false
+    if (!terms.length) return true
     const hay = [
-      r.kode_sub_kegiatan, r.nama_sub_kegiatan, r.kode_sub_unit,
+      r.kode_sub_kegiatan, r.nama_sub_kegiatan, r.kode_sub_unit, r.nama_sub_unit,
       r.kode_rekening, r.nama_rekening, r.paket_kelompok,
       r.nama_paket_kelompok, r.nama_sumber_dana,
     ].join(' ').toLowerCase()
@@ -44,16 +98,28 @@ const filtered = computed(() => {
   })
 })
 
+const adaFilter = computed(() => {
+  const f = filter.value
+  return !!(f.kodeSkpd || f.kodeSubKegiatan || f.kodeRekening || f.sumberDana || f.paketKelompok || f.q.trim())
+})
+
+function resetFilter() {
+  filter.value = { kodeSkpd: '', kodeSubKegiatan: '', kodeRekening: '', sumberDana: '', paketKelompok: '', q: '' }
+}
+
+function labelKode(o) {
+  return o.nama ? `${o.kode} — ${o.nama}` : o.kode
+}
+
 const paginated = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value
   return filtered.value.slice(start, start + pageSize.value)
 })
 
-// Ringkasan hanya muncul saat sedang mencari (mis. sub kegiatan tertentu).
-const isSearching = computed(() => !!search.value.trim())
-
+// Rincian per sumber dana hanya muncul saat ada filter aktif (mis. sub kegiatan
+// tertentu); tanpa filter angkanya sama dengan halaman Rekap Anggaran.
 const summary = computed(() => {
-  if (!isSearching.value) return null
+  if (!adaFilter.value) return null
   let total = 0
   const map = new Map()
   for (const r of filtered.value) {
@@ -69,11 +135,15 @@ const summary = computed(() => {
   return { total, sumberDana }
 })
 
+// Total pagu untuk baris yang sedang tampil — selalu ada, tidak menunggu filter.
+const totalTampil = computed(() =>
+  filtered.value.reduce((sum, r) => sum + Number(r.pagu || 0), 0))
+
 function formatRp(val) {
   return 'Rp' + Number(val || 0).toLocaleString('id-ID')
 }
 
-watch(search, () => { currentPage.value = 1 })
+watch(filter, () => { currentPage.value = 1 }, { deep: true })
 
 async function handleFileImport(uploadFile) {
   if (!uploadFile.raw) return false
@@ -120,8 +190,7 @@ async function handleFileImport(uploadFile) {
 
   try {
     await api.post('/sumber-data/anggaran', { data: rows, tahun: tahun.value })
-    const { data } = await api.get('/sumber-data/anggaran', { params: { tahun: tahun.value } })
-    rawData.value = data.data
+    await load()
     ElMessage.success(`${rows.length} baris anggaran berhasil diimport`)
   } catch {
     ElMessage.error('Gagal menyimpan data ke server')
@@ -142,6 +211,7 @@ async function clearData() {
   }
   await api.delete('/sumber-data/anggaran', { params: { tahun: tahun.value } })
   rawData.value = []
+  resetFilter()
   ElMessage.success('Data berhasil dihapus')
 }
 </script>
@@ -171,28 +241,120 @@ async function clearData() {
     </div>
 
     <el-empty
-      v-if="rawData.length === 0"
+      v-if="!loading && rawData.length === 0"
       description="Belum ada data. Import file Excel rekap anggaran untuk memulai."
       :image-size="120"
     />
 
     <template v-else>
-      <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap;">
-        <el-input
-          v-model="search"
-          placeholder="Cari beberapa istilah dipisah koma, mis. 00060, 00059, listrik"
-          :prefix-icon="Search"
-          clearable
-          style="max-width:380px;"
-        />
-        <span style="font-size:12px; color:#909399;">{{ filtered.length }} baris ditampilkan</span>
-      </div>
+      <!-- Filter -->
+      <el-card style="margin-bottom:16px;">
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+          <el-select
+            v-model="filter.kodeSkpd"
+            placeholder="Semua SKPD"
+            clearable filterable
+            style="width:250px;"
+          >
+            <el-option
+              v-for="o in opsi.skpd"
+              :key="o.kode"
+              :label="o.nama || o.kode"
+              :value="o.kode"
+            >
+              <span>{{ o.nama || o.kode }}</span>
+              <span style="float:right; color:#c0c4cc; font-size:11px;">{{ o.jumlah }}</span>
+            </el-option>
+          </el-select>
 
-      <!-- Ringkasan: hanya muncul saat mencari (mis. sub kegiatan tertentu) -->
+          <el-select
+            v-model="filter.kodeSubKegiatan"
+            placeholder="Semua sub kegiatan"
+            clearable filterable
+            style="width:300px;"
+          >
+            <el-option
+              v-for="o in opsi.subKegiatan"
+              :key="o.kode"
+              :label="labelKode(o)"
+              :value="o.kode"
+            />
+          </el-select>
+
+          <el-select
+            v-model="filter.kodeRekening"
+            placeholder="Semua rekening"
+            clearable filterable
+            style="width:300px;"
+          >
+            <el-option
+              v-for="o in opsi.rekening"
+              :key="o.kode"
+              :label="labelKode(o)"
+              :value="o.kode"
+            />
+          </el-select>
+
+          <el-select
+            v-model="filter.sumberDana"
+            placeholder="Semua sumber dana"
+            clearable filterable
+            style="width:220px;"
+          >
+            <el-option
+              v-for="o in opsi.sumberDana"
+              :key="o.nama"
+              :label="o.nama"
+              :value="o.nama"
+            >
+              <span>{{ o.nama }}</span>
+              <span style="float:right; color:#c0c4cc; font-size:11px;">{{ o.jumlah }}</span>
+            </el-option>
+          </el-select>
+
+          <el-select
+            v-if="opsi.paketKelompok.length"
+            v-model="filter.paketKelompok"
+            placeholder="Semua paket/kelompok"
+            clearable filterable
+            style="width:200px;"
+          >
+            <el-option
+              v-for="o in opsi.paketKelompok"
+              :key="o.kode"
+              :label="labelKode(o)"
+              :value="o.kode"
+            />
+          </el-select>
+
+          <el-input
+            v-model="filter.q"
+            placeholder="Cari beberapa istilah dipisah koma, mis. 00060, 00059, listrik"
+            :prefix-icon="Search"
+            clearable
+            style="width:320px;"
+          />
+
+          <el-button v-if="adaFilter" text type="primary" @click="resetFilter">Reset</el-button>
+          <el-button :icon="Refresh" :loading="loading" @click="load" style="margin-left:auto;">
+            Muat ulang
+          </el-button>
+        </div>
+
+        <div style="margin-top:12px; display:flex; gap:22px; flex-wrap:wrap; font-size:12px; color:#606266;">
+          <span>Baris: <strong>{{ filtered.length.toLocaleString('id-ID') }}</strong>
+            <span v-if="adaFilter" style="color:#909399;"> dari {{ rawData.length.toLocaleString('id-ID') }}</span>
+          </span>
+          <span>Total pagu: <strong>{{ formatRp(totalTampil) }}</strong></span>
+          <span v-if="summary">Sumber dana: <strong>{{ summary.sumberDana.length }}</strong></span>
+        </div>
+      </el-card>
+
+      <!-- Rincian per sumber dana: hanya muncul saat ada filter aktif -->
       <el-card v-if="summary" shadow="never" style="margin-bottom:16px; border:1px solid #e4e7ed;">
         <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
           <div>
-            <div style="font-size:12px; color:#67c23a; font-weight:600;">Total Anggaran (hasil pencarian)</div>
+            <div style="font-size:12px; color:#67c23a; font-weight:600;">Total Anggaran (hasil filter)</div>
             <div style="font-size:22px; font-weight:700; font-variant-numeric:tabular-nums;">{{ formatRp(summary.total) }}</div>
           </div>
           <div style="font-size:12px; color:#909399;">{{ summary.sumberDana.length }} sumber dana</div>
@@ -215,6 +377,7 @@ async function clearData() {
       </el-card>
 
       <el-table
+        v-loading="loading"
         :data="paginated"
         border
         stripe

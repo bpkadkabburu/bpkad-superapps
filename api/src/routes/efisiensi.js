@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
+import { himpunanRekening, jenisRekening } from '../utils/kodeRekening.js'
 
 const router = new Hono()
 router.use('*', requireAuth)
@@ -61,16 +62,17 @@ function kategoriSumberDana(kode) {
 // Rekening yang tidak boleh dijadikan kandidat efisiensi: belanja langganan
 // telepon, air, listrik, dan internet/TV (kebutuhan operasional tetap yang
 // tidak bisa dipangkas).
-const NON_EFISIENSI = new Set([
+//
+// Ditulis dalam format 2026+ dan dicocokkan lewat himpunanRekening, yang
+// menormalkan kedua sisi. Kalau dicocokkan mentah, keempat kode ini tidak akan
+// pernah kena untuk data 2024–2025 (formatnya 5.1.02.02.02.0059) sehingga
+// belanja langganan ikut terhitung sebagai kandidat efisiensi.
+const NON_EFISIENSI = himpunanRekening([
   '5.1.02.02.001.00059', // Belanja Tagihan Telepon
   '5.1.02.02.001.00060', // Belanja Tagihan Air
   '5.1.02.02.001.00061', // Belanja Tagihan Listrik
   '5.1.02.02.001.00063', // Belanja Kawat/Faksimili/Internet/TV Berlangganan
 ])
-
-function jenisKode(kodeRekening) {
-  return String(kodeRekening || '').split('.').slice(0, 3).join('.')
-}
 
 function serapan(sp2d, pagu) {
   return pagu > 0 ? sp2d / pagu : null
@@ -164,7 +166,7 @@ router.get('/', async (c) => {
 
   for (const leaf of leaves.values()) {
     // Rekening operasional tetap (telepon/air/listrik/internet) bukan kandidat efisiensi.
-    if (NON_EFISIENSI.has(String(leaf.row.kode_rekening || ''))) continue
+    if (NON_EFISIENSI.punya(leaf.row.kode_rekening)) continue
 
     const parts = [] // { cat, pagu, spp, sp2d }
     if (leaf.sdPagu.size) {
@@ -186,7 +188,7 @@ router.get('/', async (c) => {
     if (selPagu === 0 && selSp2d === 0 && selSpp === 0) continue
 
     const r = leaf.row
-    const jenis = jenisKode(r.kode_rekening)
+    const jenis = jenisRekening(r.kode_rekening)
     const rowKey = `${r.kode_skpd}||${r.kode_sub_skpd}||${jenis}`
     let row = rows.get(rowKey)
     if (!row) {

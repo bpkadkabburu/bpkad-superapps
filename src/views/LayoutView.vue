@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useTahunStore } from '../stores/tahun'
-import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled, TrendCharts, PieChart, Histogram } from '@element-plus/icons-vue'
+import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled, TrendCharts, PieChart, Histogram, Tickets, Wallet } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -105,11 +105,20 @@ function goHome() {
               <el-icon><Document /></el-icon>
               <span>Sub Kegiatan</span>
             </el-menu-item>
+            <el-menu-item v-if="skpdSynced" :index="`/tahun/${tahun}/referensi/sumber-dana`">
+              <el-icon><Document /></el-icon>
+              <span>Sumber Dana</span>
+            </el-menu-item>
             <el-menu-item v-if="skpdSynced" :index="`/tahun/${tahun}/referensi/subkegiatan-pmk`">
               <el-icon><Document /></el-icon>
               <span>Subkegiatan PMK</span>
             </el-menu-item>
           </el-sub-menu>
+
+          <el-menu-item :index="`/tahun/${tahun}/perbup-apbd`">
+            <el-icon><Tickets /></el-icon>
+            <span>Perbup Penjabaran</span>
+          </el-menu-item>
 
           <template v-if="skpdSynced">
             <el-sub-menu index="sumber-data">
@@ -158,6 +167,11 @@ function goHome() {
             <el-menu-item :index="`/tahun/${tahun}/rekap-pmk`">
               <el-icon><Histogram /></el-icon>
               <span>Rekap PMK</span>
+            </el-menu-item>
+
+            <el-menu-item :index="`/tahun/${tahun}/proyeksi-gaji`">
+              <el-icon><Wallet /></el-icon>
+              <span>Proyeksi Gaji</span>
             </el-menu-item>
 
             <el-menu-item :index="`/tahun/${tahun}/efisiensi`">

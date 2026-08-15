@@ -10,10 +10,13 @@ import dokumenRealisasiRoutes from './routes/dokumenRealisasi.js'
 import dokumenAklapRoutes from './routes/dokumenAklap.js'
 import skpdRoutes from './routes/skpd.js'
 import subKegiatanRoutes from './routes/subKegiatan.js'
+import sumberDanaRoutes from './routes/sumberDana.js'
 import rekapRealisasiRoutes from './routes/rekapRealisasi.js'
 import rekapPerUrusanRoutes from './routes/rekapPerUrusan.js'
 import rekapPerProgramRoutes from './routes/rekapPerProgram.js'
+import perbupApbdRoutes from './routes/perbupApbd.js'
 import efisiensiRoutes from './routes/efisiensi.js'
+import proyeksiGajiRoutes from './routes/proyeksiGaji.js'
 import apiKeysRoutes from './routes/apiKeys.js'
 import syncRoutes from './routes/sync.js'
 import mappingRoutes from './routes/mapping.js'
@@ -32,6 +35,7 @@ app.route('/api/sync', syncRoutes)
 app.route('/api/tahun-anggaran', tahunAnggaranRoutes)
 app.route('/api/referensi/skpd', skpdRoutes)
 app.route('/api/referensi/sub-kegiatan', subKegiatanRoutes)
+app.route('/api/referensi/sumber-dana', sumberDanaRoutes)
 app.route('/api/referensi/subkegiatan-pmk', subkegiatanPmkRoutes)
 app.route('/api/sumber-data/anggaran', anggaranRekapRoutes)
 app.route('/api/sumber-data/dokumen-realisasi', dokumenRealisasiRoutes)
@@ -39,7 +43,9 @@ app.route('/api/sumber-data/dokumen-aklap', dokumenAklapRoutes)
 app.route('/api/rekap-realisasi', rekapRealisasiRoutes)
 app.route('/api/rekap-per-urusan', rekapPerUrusanRoutes)
 app.route('/api/rekap-per-program', rekapPerProgramRoutes)
+app.route('/api/perbup-apbd', perbupApbdRoutes)
 app.route('/api/efisiensi', efisiensiRoutes)
+app.route('/api/proyeksi-gaji', proyeksiGajiRoutes)
 app.route('/api/mapping-pmk', mappingRoutes)
 
 serve({ fetch: app.fetch, port: 3001 }, () => {

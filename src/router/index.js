@@ -48,6 +48,12 @@ const routes = [
                 meta: { requiresSkpdSync: true }
               },
               {
+                path: 'sumber-dana',
+                name: 'ReferensiSumberDana',
+                component: () => import('../views/referensi/SumberDanaView.vue'),
+                meta: { requiresSkpdSync: true }
+              },
+              {
                 path: 'subkegiatan-pmk',
                 name: 'SubkegiatanPMK',
                 component: () => import('../views/SubkegiatanPMKView.vue'),
@@ -79,6 +85,12 @@ const routes = [
             ]
           },
           {
+            // Alat mandiri: sumbernya file Excel Lampiran I, tidak butuh data SIPD
+            path: 'perbup-apbd',
+            name: 'PerbupApbd',
+            component: () => import('../views/PerbupApbdView.vue')
+          },
+          {
             path: 'rekap-realisasi',
             name: 'RekapRealisasi',
             component: () => import('../views/RekapRealisasiView.vue'),
@@ -106,6 +118,12 @@ const routes = [
             path: 'rekap-pmk',
             name: 'RekapPMK',
             component: () => import('../views/RekapPMKView.vue'),
+            meta: { requiresSkpdSync: true }
+          },
+          {
+            path: 'proyeksi-gaji',
+            name: 'ProyeksiGaji',
+            component: () => import('../views/ProyeksiGajiView.vue'),
             meta: { requiresSkpdSync: true }
           },
           {
