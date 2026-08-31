@@ -1,0 +1,310 @@
+import { subRincianRekening } from './kodeRekening.js'
+
+// ---- Proyeksi akhir: usulan alokasi anggaran gaji sampai tutup tahun ----
+//
+// Kebutuhan riil satu dinas sampai Desember = realisasi yang sudah dibayar +
+// proyeksi sisa bulan. Di atas angka itu ditambah cadangan (default 2,5%) untuk
+// kenaikan gaji berkala, kenaikan pangkat, dan mutasi masuk yang belum terlihat
+// di realisasi berjalan.
+//
+// Pagu gaji sekabupaten diperlakukan sebagai satu kantong: dinas yang pagunya
+// berlebih menutup dinas yang kurang. Kalau usulan (kebutuhan + cadangan)
+// melebihi isi kantong, kekurangannya disebar ke SEMUA dinas dengan memangkas
+// cadangan secara proporsional — cadangan tiap dinas mengecil bersama-sama,
+// tetapi tidak ada satu pun dinas yang alokasinya jatuh di bawah kebutuhan
+// riilnya sampai Desember. Kalau cadangan sudah habis dipangkas dan kantongnya
+// masih kurang juga, selisihnya dilaporkan apa adanya sebagai kekurangan riil
+// (butuh tambahan anggaran / pergeseran dari belanja lain) — bukan disebar
+// diam-diam sampai ada dinas yang kehabisan gaji.
+const DEFAULT_PERSEN_CADANGAN = 2.5
+
+const num = (v) => Number(v) || 0
+
+// Segmen terakhir kode rekening memisahkan golongan pegawai: …00001 = PNS,
+// …00002 = PPPK (berlaku di format lama maupun 2026+). Labelnya sengaja TIDAK
+// dipaku ke kode, melainkan diambil dari kata terakhir nama rekening
+// ("Belanja Gaji Pokok PNS" → PNS). Jadi kalau awalan rekening lain yang dipakai
+// atau muncul golongan baru, pengelompokannya tetap benar dan namanya ikut data.
+function petaLabelGolongan(daftarSkpd) {
+  const kata = new Map()
+  for (const s of daftarSkpd) {
+    for (const r of s.rekening || []) {
+      const kunci = subRincianRekening(r.kodeRekening) || '-'
+      if (!kata.has(kunci)) kata.set(kunci, new Set())
+      const terakhir = String(r.namaRekening || '').trim().split(/\s+/).pop()
+      if (terakhir) kata.get(kunci).add(terakhir.toUpperCase())
+    }
+  }
+  const peta = new Map()
+  for (const [kunci, set] of kata) {
+    peta.set(kunci, set.size === 1 ? [...set][0] : `Sub rincian ${kunci}`)
+  }
+  return peta
+}
+
+function urutGolonganLaluKode(a, b) {
+  return String(a.golongan).localeCompare(String(b.golongan)) ||
+    String(a.kodeRekening).localeCompare(String(b.kodeRekening), 'id', { numeric: true })
+}
+
+// Subtotal per golongan. Daftar rekeningnya sendiri tidak ikut disalin ke sini —
+// pemakainya menyaring dari array rekening yang sudah urut per golongan, supaya
+// payload tidak memuat data yang sama dua kali.
+function kelompokGolongan(rekening, labelPeta) {
+  const map = new Map()
+  for (const r of rekening) {
+    let g = map.get(r.golongan)
+    if (!g) {
+      g = {
+        kunci: r.golongan, label: labelPeta.get(r.golongan) || r.golongan,
+        jumlahRekening: 0, pagu: 0, sp2d: 0, realisasiTerakhir: 0, perBulanRutin: 0,
+        kebutuhan: 0, alokasi: 0, tambah: 0, kurangi: 0,
+      }
+      map.set(r.golongan, g)
+    }
+    g.jumlahRekening += 1
+    g.pagu += r.pagu
+    g.sp2d += r.sp2d
+    g.realisasiTerakhir += r.realisasiTerakhir
+    g.perBulanRutin += r.perBulanRutin
+    g.kebutuhan += r.kebutuhan
+    g.alokasi += r.alokasi
+    if (r.pergeseran > 0) g.tambah += r.pergeseran
+    else if (r.pergeseran < 0) g.kurangi += r.pergeseran
+  }
+  for (const g of map.values()) {
+    g.pergeseran = g.alokasi - g.pagu
+    g.cadanganAkhir = g.alokasi - g.kebutuhan
+  }
+  return [...map.values()].sort((a, b) => String(a.kunci).localeCompare(String(b.kunci)))
+}
+
+const bulat = (n) => Math.round(Number(n) || 0)
+
+// Pembulatan ke rupiah membuat Σ alokasi meleset beberapa rupiah dari kantong
+// yang tersedia. Selisih receh itu ditempelkan ke baris terbesar yang masih
+// punya cadangan, supaya Σ alokasi = kantong persis — syarat mutlak kalau
+// angkanya dipakai sebagai usulan pergeseran.
+function rapikanPembulatan(items, target) {
+  let sisa = bulat(target) - items.reduce((a, i) => a + i.alokasi, 0)
+  if (!sisa) return
+  for (const it of [...items].sort((a, b) => b.alokasi - a.alokasi)) {
+    if (!sisa) break
+    // Ke bawah hanya boleh sebatas cadangan baris itu; kebutuhan riil tidak
+    // boleh tergerus walau cuma satu rupiah.
+    const langkah = sisa > 0 ? sisa : -Math.min(-sisa, Math.max(0, it.alokasi - it.kebutuhan))
+    it.alokasi += langkah
+    sisa -= langkah
+  }
+}
+
+// Alokasi tiap rekening di dalam satu dinas memakai faktor yang sama dengan
+// dinasnya, jadi porsi cadangannya merata dan Σ rekening = alokasi dinas.
+function bagiKeRekening(b) {
+  const faktor = b.kebutuhan > 0 ? b.alokasi / b.kebutuhan : 0
+  const rows = (b._rekening || []).map(r => {
+    const pagu = bulat(r.pagu)
+    const kebutuhan = bulat(num(r.sp2d) + num(r.proyeksi))
+    return {
+      kodeRekening: r.kodeRekening,
+      namaRekening: r.namaRekening,
+      pagu,
+      sp2d: bulat(r.sp2d),
+      proyeksi: bulat(r.proyeksi),
+      kebutuhan,
+      // Realisasi bulan terakhir dinas ini — dasar kroscek manual: nilai sebulan
+      // dikali sisa bulan harusnya mendekati angka kebutuhannya.
+      realisasiTerakhir: bulat(r.realisasiTerakhir),
+      // Berapa kali rekening ini dibayar dan berapa nilainya sebulan — pembagi
+      // milik rekening itu sendiri, bukan pembagi dinas. Dibawa ke sini supaya
+      // kebutuhannya bisa diadu manual: realisasi ÷ dibayar × sisa bulan.
+      dibayar: Number(r.dibayar) || 0,
+      dibayarPerkiraan: !!r.dibayarPerkiraan,
+      perBulanRutin: bulat(r.perBulanRutin),
+      rataRata: bulat(r.rataRata),
+      tertinggi: bulat(r.tertinggi),
+      // >1 = tiga kali bayar terakhir di atas rata-rata tahun berjalan.
+      tren: Number(r.tren) || 0,
+      golongan: subRincianRekening(r.kodeRekening) || '-',
+      alokasi: b.terkunci ? pagu : bulat(kebutuhan * faktor),
+      // Rekening berpagu yang belum sekali pun dibayar: proyeksinya 0 sehingga
+      // alokasinya ikut 0. Sering memang benar (rekening tidak terpakai), tapi
+      // bisa juga komponen yang baru dibayar sekali di akhir tahun — ditandai
+      // supaya dicek dulu sebelum pagunya ditarik.
+      tanpaRealisasi: pagu > 0 && kebutuhan <= 0,
+    }
+  })
+  if (!b.terkunci) rapikanPembulatan(rows, b.alokasi)
+  for (const r of rows) {
+    r.pergeseran = r.alokasi - r.pagu
+    r.cadanganAkhir = r.alokasi - r.kebutuhan
+  }
+  // Urut per golongan dulu, baru per kode: seluruh rekening PNS berkumpul, lalu
+  // seluruh rekening PPPK — bukan berselang-seling seperti urutan kode aslinya.
+  return rows.sort(urutGolonganLaluKode)
+}
+
+export function hitungProyeksiAkhir(data, { persen } = {}) {
+  const p = Number(persen)
+  const persenCadangan = Number.isFinite(p) && p >= 0 ? p : DEFAULT_PERSEN_CADANGAN
+  const rate = persenCadangan / 100
+  const labelPeta = petaLabelGolongan(data.skpd || [])
+
+  const baris = (data.skpd || []).map(s => {
+    const kebutuhan = bulat(num(s.sp2d) + num(s.proyeksi))
+    return {
+      kodeSkpd: s.kodeSkpd,
+      namaSkpd: s.namaSkpd,
+      pagu: bulat(s.pagu),
+      sp2d: bulat(s.sp2d),
+      proyeksi: bulat(s.proyeksi),
+      kebutuhan,
+      // Angka dasar hitungan, dibawa apa adanya supaya proyeksinya bisa diadu
+      // manual: realisasi bulan terakhir × sisa bulan ≈ kebutuhan sisa bulan.
+      bulanTerakhirSkpd: s.bulanTerakhirSkpd ?? null,
+      realisasiTerakhir: bulat(s.realisasiTerakhir),
+      sp2dTerakhir: num(s.sp2dTerakhir),
+      perBulanRutin: bulat(s.perBulanRutin),
+      bulanGajiTerbayar: num(s.bulanGajiTerbayar),
+      medianBulan: bulat(s.medianBulan),
+      // Nilai bulan terakhir dibanding satu bulan rutin (median). Di atas ~1,4
+      // berarti bulan itu memuat lebih dari satu kali gaji — lazimnya THR atau
+      // gaji ke-13, kadang rapel kenaikan — jadi angkanya tidak boleh dipakai
+      // mentah-mentah sebagai "gaji sebulan". Jumlah SP2D saja bukan penanda:
+      // PNS dan PPPK memang lazim terbit SP2D sendiri-sendiri tiap bulan.
+      rasioTerakhir: num(s.medianBulan) > 0
+        ? Math.round((num(s.realisasiTerakhir) / num(s.medianBulan)) * 100) / 100
+        : 0,
+      // Dinas tanpa realisasi sekaligus tanpa proyeksi tidak punya dasar hitung.
+      // Pagunya dikunci apa adanya, bukan dinolkan lalu ditarik ke kantong
+      // bersama — belum tentu benar-benar tidak dipakai.
+      terkunci: kebutuhan <= 0,
+      pembagiPerkiraan: !!s.pembagiPerkiraan,
+      _rekening: s.rekening || [],
+    }
+  })
+
+  const aktif = baris.filter(b => !b.terkunci)
+  const kantong = aktif.reduce((a, b) => a + b.pagu, 0)
+  const paguTerkunci = baris.reduce((a, b) => a + (b.terkunci ? b.pagu : 0), 0)
+  const totalKebutuhan = aktif.reduce((a, b) => a + b.kebutuhan, 0)
+  const totalCadangan = totalKebutuhan * rate
+  const totalIdeal = totalKebutuhan + totalCadangan
+
+  // Berapa usulan ideal melebihi kantong, dan berapa bagiannya yang masih bisa
+  // ditutup dengan memangkas cadangan.
+  const kelebihan = totalIdeal - kantong
+  let faktorPotong = 0  // porsi cadangan yang dipangkas, 0..1
+  let defisitRiil = 0   // sisa kekurangan yang tak bisa disebar tanpa bikin dinas kurang gaji
+  if (kelebihan > 0) {
+    if (totalCadangan > 0 && kelebihan < totalCadangan) {
+      faktorPotong = kelebihan / totalCadangan
+    } else {
+      faktorPotong = 1
+      defisitRiil = bulat(kelebihan - totalCadangan)
+    }
+  }
+
+  for (const b of baris) {
+    b.ideal = b.terkunci ? b.pagu : bulat(b.kebutuhan * (1 + rate))
+    b.alokasi = b.terkunci ? b.pagu : bulat(b.kebutuhan * (1 + rate * (1 - faktorPotong)))
+  }
+  // Perapian receh hanya berlaku waktu kantongnya memang mengikat, yaitu saat
+  // cadangan dipangkas. Kalau pagu masih berlebih, kelebihannya dibiarkan jadi
+  // sisa anggaran — bukan ditempelkan ke dinas terbesar. Kalau masih ada defisit
+  // riil, Σ alokasi sengaja dibiarkan melebihi kantong supaya kekurangannya
+  // tetap kelihatan, bukan disamarkan jadi pas.
+  if (faktorPotong > 0 && !defisitRiil) rapikanPembulatan(aktif, kantong)
+
+  for (const b of baris) {
+    b.pergeseran = b.alokasi - b.pagu
+    b.cadanganAkhir = b.alokasi - b.kebutuhan
+    b.persenAkhir = b.kebutuhan > 0 ? (b.cadanganAkhir / b.kebutuhan) * 100 : 0
+    b.rekening = bagiKeRekening(b)
+    b.golongan = kelompokGolongan(b.rekening, labelPeta)
+    b.rekeningTambah = b.rekening.filter(r => r.pergeseran > 0).length
+    b.rekeningTanpaRealisasi = b.rekening.filter(r => r.tanpaRealisasi).length
+    delete b._rekening
+  }
+
+  // Rekap lintas dinas per komponen gaji: rekening mana yang pagunya paling
+  // banyak kurang, dan rekening mana yang justru jadi sumber pergeseran.
+  const rekMap = new Map()
+  for (const b of baris) {
+    for (const r of b.rekening) {
+      let g = rekMap.get(r.kodeRekening)
+      if (!g) {
+        g = {
+          kodeRekening: r.kodeRekening, namaRekening: r.namaRekening,
+          golongan: r.golongan,
+          pagu: 0, sp2d: 0, realisasiTerakhir: 0, kebutuhan: 0, alokasi: 0,
+          perBulanRutin: 0, rataRata: 0, tertinggi: 0,
+          tambah: 0, kurangi: 0, dinasTambah: 0, dinasKurangi: 0, dinasTanpaRealisasi: 0,
+        }
+        rekMap.set(r.kodeRekening, g)
+      }
+      g.pagu += r.pagu; g.sp2d += r.sp2d; g.realisasiTerakhir += r.realisasiTerakhir
+      g.perBulanRutin += r.perBulanRutin
+      g.rataRata += r.rataRata
+      g.tertinggi += r.tertinggi
+      g.kebutuhan += r.kebutuhan; g.alokasi += r.alokasi
+      if (r.pergeseran > 0) { g.dinasTambah += 1; g.tambah += r.pergeseran }
+      else if (r.pergeseran < 0) { g.dinasKurangi += 1; g.kurangi += r.pergeseran }
+      if (r.tanpaRealisasi) g.dinasTanpaRealisasi += 1
+    }
+  }
+  const rekening = Array.from(rekMap.values())
+    .map(g => ({
+      ...g,
+      pergeseran: g.alokasi - g.pagu,
+      // Acress dalam rupiah — kolomnya sendiri supaya usulan bisa dibaca sebagai
+      // kebutuhan + acress, bukan satu angka gelondongan.
+      cadanganAkhir: g.alokasi - g.kebutuhan,
+      tren: g.rataRata > 0 ? Math.round((g.tertinggi / g.rataRata) * 1000) / 1000 : 0,
+      // Laju bayar efektif sekabupaten untuk rekening ini. Tidak bisa dirata-rata
+      // begitu saja dari tiap dinas — diturunkan dari nilai sebulan yang memang
+      // boleh dijumlahkan.
+      dibayar: g.perBulanRutin > 0 ? Math.round((g.sp2d / g.perBulanRutin) * 100) / 100 : 0,
+    }))
+    .sort(urutGolonganLaluKode)
+
+  const totalAlokasi = baris.reduce((a, b) => a + b.alokasi, 0)
+  // Dinas terkunci ikut di totalAlokasi (pagunya dibiarkan utuh) tapi tidak
+  // punya angka kebutuhan, jadi hitungan cadangan hanya memakai dinas aktif.
+  const alokasiAktif = aktif.reduce((a, b) => a + b.alokasi, 0)
+  const tambah = baris.filter(b => b.pergeseran > 0)
+  const kurangi = baris.filter(b => b.pergeseran < 0)
+
+  return {
+    basis: data.basis === 'tertinggi' ? 'tertinggi' : 'rata',
+    persenCadangan,
+    // Persentase cadangan yang benar-benar kebagian setelah dipangkas.
+    persenAkhir: persenCadangan * (1 - faktorPotong),
+    faktorPotong,
+    kantong,
+    paguTerkunci,
+    totalPagu: kantong + paguTerkunci,
+    totalKebutuhan,
+    totalCadangan: bulat(totalCadangan),
+    totalIdeal: bulat(totalIdeal),
+    // Selisih usulan ideal terhadap kantong (>0 = kantong tidak cukup).
+    kelebihan: bulat(Math.max(0, kelebihan)),
+    // Bagian kekurangan yang berhasil ditutup dengan memangkas cadangan.
+    disebar: bulat(Math.max(0, Math.min(kelebihan, totalCadangan))),
+    defisitRiil,
+    cukup: defisitRiil <= 0,
+    totalAlokasi,
+    totalAlokasiAktif: alokasiAktif,
+    totalCadanganAkhir: alokasiAktif - totalKebutuhan,
+    sisaKantong: kantong - alokasiAktif,
+    pergeseranMasuk: tambah.reduce((a, b) => a + b.pergeseran, 0),
+    pergeseranKeluar: kurangi.reduce((a, b) => a + b.pergeseran, 0),
+    jumlahTambah: tambah.length,
+    jumlahKurangi: kurangi.length,
+    jumlahTerkunci: baris.length - aktif.length,
+    skpd: baris,
+    rekening,
+    // Rekap PNS vs PPPK (atau golongan apa pun yang ada di awalan yang dipakai).
+    golongan: kelompokGolongan(rekening, labelPeta),
+  }
+}

@@ -10,6 +10,7 @@
     "seed": "node seed.js",
     "uji:perbup": "node scripts/uji-perbup-api.mjs",
     "uji:proyeksi-gaji": "node scripts/uji-proyeksi-gaji.mjs",
+    "uji:proyeksi-akhir": "node scripts/uji-proyeksi-akhir.mjs",
     "uji:dokumen-realisasi": "node scripts/uji-dokumen-realisasi.mjs",
     "uji:kode-rekening": "node scripts/uji-kode-rekening.mjs"
   },

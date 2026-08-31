@@ -46,6 +46,15 @@ export function jenisRekening(kode) {
 
 const NAMA_TINGKAT = ['akun', 'kelompok', 'jenis', 'objek', 'rincian objek', 'sub rincian objek']
 
+/**
+ * Segmen sub rincian objek dalam bentuk baku (5 digit), mis. 00001.
+ * Di kelompok belanja gaji, segmen inilah yang memisahkan golongan pegawai
+ * (…00001 = PNS, …00002 = PPPK) di format lama maupun 2026+.
+ */
+export function subRincianRekening(kode) {
+  return segmenKode(normalKodeRekening(kode))[5] || null
+}
+
 /** Tingkat hierarki dihitung dari jumlah segmen, jadi tidak tergantung lebar digit. */
 export function tingkatRekening(kode) {
   const n = segmenKode(kode).filter(Boolean).length

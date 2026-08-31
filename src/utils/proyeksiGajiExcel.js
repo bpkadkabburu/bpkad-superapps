@@ -23,6 +23,8 @@ const NAMA_BULAN = ['', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
 const FMT_RP = '#,##0'
 const FMT_RP_MERAH = '#,##0;[Red]-#,##0' // kekurangan anggaran langsung terlihat
 const FMT_DESIMAL = '0.00'
+// Pergeseran selalu bertanda: merah = pagunya perlu ditambah, biru = pagunya ditarik.
+const FMT_PERGESERAN = '[Red]+#,##0;[Blue]-#,##0;"\u2014"'
 
 const ABU = 'FFF2F4F7'
 const KUNING = 'FFFFF6D6' // kolom isian manual (Sim Gaji)
@@ -30,6 +32,9 @@ const BIRU = 'FFEAF3FF'   // baris total
 const HIJAU = 'FFEAF7EC'  // sel angka turunan dari data
 const MERAH = 'FFFDE7E9'  // baris/sel yang anggarannya kurang
 const MERAH_TEKS = 'FFB42318'
+const AMBER = 'FFFDF3E3'      // baris yang pagunya perlu ditambah (Proyeksi Akhir)
+const AMBER_TEKS = 'FFB54708'
+const KUNCI = 'FFF4F5F7'      // dinas yang pagunya dikunci apa adanya
 
 // Nama sheet Excel: maks 31 karakter, tidak boleh memuat : \ / ? * [ ]
 // Nomor urut di depan menjamin nama tetap unik walau nama dinas terpotong.
@@ -77,6 +82,53 @@ function tandaiKurang(row, kolomTerakhir, { lewati = [], kolomTeks = [] } = {}) 
     const cell = row.getCell(c)
     cell.font = { ...(cell.font || {}), bold: true, color: { argb: MERAH_TEKS } }
   }
+}
+
+// Di sheet Proyeksi Akhir yang ditandai bukan "kurang" melainkan arah pergeseran:
+// dinas yang pagunya perlu ditambah (kuning) dan dinas yang pagunya dikunci (abu).
+function tandaiTambah(row, kolomTerakhir, { lewati = [], kolomTeks = [] } = {}) {
+  for (let c = 1; c <= kolomTerakhir; c++) {
+    // Kolom isian manual dilewati supaya penanda kuningnya tidak tertimpa.
+    if (lewati.includes(c)) continue
+    row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: AMBER } }
+  }
+  for (const c of kolomTeks) {
+    const cell = row.getCell(c)
+    cell.font = { ...(cell.font || {}), bold: true, color: { argb: AMBER_TEKS } }
+  }
+}
+
+function tandaiKunci(row, kolomTerakhir) {
+  for (let c = 1; c <= kolomTerakhir; c++) {
+    const cell = row.getCell(c)
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNCI } }
+    cell.font = { ...(cell.font || {}), italic: true, color: { argb: 'FF98A2B3' } }
+  }
+}
+
+function angkaPersen(v) {
+  return Number(v || 0).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'
+}
+
+const rupiah = (v) => 'Rp' + Math.round(Number(v) || 0).toLocaleString('id-ID')
+
+// Satu kalimat di kepala sheet yang menjelaskan apa yang terjadi pada pagu:
+// cukup, dipangkas bersama, atau memang kurang dan perlu tambahan anggaran.
+function ceritaAkhir(akhir) {
+  if (!akhir.cukup) {
+    return `Pagu gaji sekabupaten KURANG ${rupiah(akhir.defisitRiil)} dari kebutuhan riil sampai Desember. ` +
+      'Cadangan sudah dinolkan dan seluruh pagu berlebih sudah ditarik, tapi kekurangan ini tetap tidak bisa disebar ' +
+      'tanpa membuat ada dinas kehabisan gaji — perlu tambahan anggaran atau pergeseran dari belanja lain.'
+  }
+  if (akhir.faktorPotong > 0) {
+    return `Usulan kebutuhan + ${angkaPersen(akhir.persenCadangan)} berjumlah ${rupiah(akhir.totalIdeal)}, ` +
+      `melebihi pagu tersedia ${rupiah(akhir.kantong)} sebesar ${rupiah(akhir.kelebihan)}. Kekurangan itu disebar ke ` +
+      `seluruh dinas dengan memangkas cadangan menjadi ${angkaPersen(akhir.persenAkhir)}: ${rupiah(akhir.pergeseranMasuk)} ` +
+      `ditambahkan ke ${akhir.jumlahTambah} dinas, diambil dari ${akhir.jumlahKurangi} dinas yang pagunya berlebih. ` +
+      'Tidak ada dinas yang alokasinya jatuh di bawah kebutuhan gajinya sampai Desember.'
+  }
+  return `Pagu mencukupi — seluruh dinas dapat kebutuhan penuh + ${angkaPersen(akhir.persenCadangan)} cadangan, ` +
+    `masih tersisa ${rupiah(akhir.sisaKantong)}.`
 }
 
 // Latar merah statis di atas mengikuti angka saat file dibuat. Aturan format
@@ -219,6 +271,7 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       { header: 'Nama Rekening', width: 46 },
       { header: 'Anggaran', width: 18 },
       { header: `Realisasi\n(${labelRealisasi})`, width: 18 },
+      { header: 'Dibayar\n(kali)', width: 10 },
       { header: 'Sim Gaji /Bln\n(isi manual)', width: 17 },
       { header: 'Sisa Anggaran', width: 18 },
       { header: 'Rata²/Bln\n(dari Realisasi)', width: 17 },
@@ -236,10 +289,14 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     // Dua sel ini yang dipakai seluruh rumus di sheet ini. Nomor barisnya dipakai
     // langsung untuk menyusun referensi, jadi menambah/mengurangi baris judul di
     // atasnya tidak akan membuat rumus menunjuk sel yang salah.
-    const barisTerbayar = barisAngka(ws, 'Bulan-gaji sudah dibayar', s.bulanGajiTerbayar,
+    // Angka ini hanya ringkasan tingkat dinas. Pembagi yang benar-benar dipakai
+    // tiap baris ada di kolom "Dibayar (kali)": gaji pokok ikut terbayar di bulan
+    // THR dan gaji ke-13 (≈10 kali), sedangkan iuran BPJS hanya sekali sebulan
+    // (8 kali). Kalau semuanya dibagi angka yang sama, iuran jadi kurang ±23%.
+    const barisTerbayar = barisAngka(ws, 'Bulan-gaji sudah dibayar (rata dinas)', s.bulanGajiTerbayar,
       s.pembagiPerkiraan
         ? 'perkiraan: realisasi bulanan belum bisa dihitung, dipakai jumlah bulan kalender'
-        : 'dihitung dari realisasi per bulan (lihat sheet PER BULAN)')
+        : 'ringkasan; pembagi tiap rekening ada di kolom "Dibayar (kali)"')
     const barisSisa = barisAngka(ws, 'Bulan-gaji sisa', bulanSisa, rentangSisa)
 
     const header = ws.addRow(KOLOM.map(k => k.header))
@@ -257,22 +314,28 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
         r.namaRekening,
         r.pagu,
         r.sp2d,
+        r.dibayar,
         null, // Sim Gaji — isian manual
         { formula: `C${n}-D${n}` },
-        { formula: `IFERROR(D${n}/${REF_TERBAYAR},0)` },
-        { formula: `G${n}*${REF_SISA}` },
-        { formula: `IF(E${n}="","",E${n}*${REF_SISA})` },
+        { formula: `IFERROR(D${n}/E${n},0)` },
+        { formula: `H${n}*${REF_SISA}` },
+        { formula: `IF(F${n}="","",F${n}*${REF_SISA})` },
         // Selama Sim Gaji belum diisi, selisih memakai kebutuhan versi realisasi.
-        { formula: `F${n}-IF(E${n}="",H${n},I${n})` },
-        { formula: `IF(J${n}<0,"KURANG","CUKUP")` },
+        { formula: `G${n}-IF(F${n}="",I${n},J${n})` },
+        { formula: `IF(K${n}<0,"KURANG","CUKUP")` },
       ])
       row.font = { size: 10 }
       for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
       row.getCell(1).font = { size: 10, name: 'Consolas' }
-      row.getCell(5).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
-      row.getCell(11).alignment = { horizontal: 'center' }
+      row.getCell(5).alignment = { horizontal: 'center' }
+      if (r.dibayarPerkiraan) {
+        row.getCell(5).font = { size: 10, italic: true, color: { argb: 'FF98A2B3' } }
+        row.getCell(5).note = 'Rekening ini belum punya realisasi bulanan sendiri — dipakai laju bayar dinas.'
+      }
+      row.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
+      row.getCell(12).alignment = { horizontal: 'center' }
       // Rekening yang anggarannya tidak cukup sampai akhir tahun.
-      if (r.selisih < 0) tandaiKurang(row, KOL, { lewati: [5], kolomTeks: [10, 11] })
+      if (r.selisih < 0) tandaiKurang(row, KOL, { lewati: [6], kolomTeks: [11, 12] })
     }
 
     const barisTerakhir = ws.rowCount
@@ -284,23 +347,27 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       'TOTAL', s.namaSkpd,
       { formula: jum('C') },
       { formula: jum('D') },
-      { formula: jum('E') },
+      // Kolom "Dibayar" tidak dijumlahkan — tiap rekening punya lajunya sendiri.
+      // Yang dijumlahkan Rata²/Bln-nya, sehingga Kebutuhan total = Σ per rekening.
+      null,
       { formula: jum('F') },
-      { formula: `IFERROR(D${n}/${REF_TERBAYAR},0)` },
-      { formula: `G${n}*${REF_SISA}` },
-      { formula: `IF(E${n}=0,"",E${n}*${REF_SISA})` },
-      { formula: `F${n}-IF(E${n}=0,H${n},I${n})` },
-      { formula: `IF(J${n}<0,"KURANG","CUKUP")` },
+      { formula: jum('G') },
+      { formula: jum('H') },
+      { formula: jum('I') },
+      { formula: `IF(F${n}=0,"",F${n}*${REF_SISA})` },
+      { formula: `G${n}-IF(F${n}=0,I${n},J${n})` },
+      { formula: `IF(K${n}<0,"KURANG","CUKUP")` },
     ])
     styleBarisTotal(total, KOL)
-    total.getCell(11).alignment = { horizontal: 'center' }
-    if (s.selisih < 0) tandaiKurang(total, KOL, { kolomTeks: [10, 11] })
+    total.getCell(12).alignment = { horizontal: 'center' }
+    if (s.selisih < 0) tandaiKurang(total, KOL, { kolomTeks: [11, 12] })
 
-    for (const kol of ['C', 'D', 'E', 'G', 'H', 'I']) ws.getColumn(kol).numFmt = FMT_RP
-    for (const kol of ['F', 'J']) ws.getColumn(kol).numFmt = FMT_RP_MERAH
+    for (const kol of ['C', 'D', 'F', 'H', 'I', 'J']) ws.getColumn(kol).numFmt = FMT_RP
+    for (const kol of ['G', 'K']) ws.getColumn(kol).numFmt = FMT_RP_MERAH
+    ws.getColumn('E').numFmt = FMT_DESIMAL
     if (adaData) {
       ws.autoFilter = { from: { row: header.number, column: 1 }, to: { row: barisTerakhir, column: KOL } }
-      aturanSelisihMerah(ws, 'J', barisPertama, total.number)
+      aturanSelisihMerah(ws, 'K', barisPertama, total.number)
     }
 
     sheetInfo.push({ nama, barisTotal: total.number, refTerbayar: REF_TERBAYAR })
@@ -318,13 +385,13 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       s.namaSkpd,
       { formula: `${ref}C${t}` },
       { formula: `${ref}D${t}` },
-      { formula: `${ref}F${t}` },
-      { formula: `${ref}E${t}` },
       { formula: `${ref}G${t}` },
+      { formula: `${ref}F${t}` },
       { formula: `${ref}H${t}` },
       { formula: `${ref}I${t}` },
       { formula: `${ref}J${t}` },
       { formula: `${ref}K${t}` },
+      { formula: `${ref}L${t}` },
       jumlahRekeningKurang(s) || null,
       { formula: `${ref}${info.refTerbayar}` },
     ])
@@ -436,6 +503,7 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       { header: 'Nama Rekening', width: 46 },
       { header: 'Anggaran', width: 18 },
       { header: `Realisasi\n(${labelRealisasi})`, width: 18 },
+      { header: 'Dibayar\n(kali)', width: 10 },
       { header: 'Sisa Anggaran', width: 18 },
       { header: 'Rata²/Bln\n(dari Realisasi)', width: 17 },
       { header: `Kebutuhan ${bulanSisa} Bln`, width: 18 },
@@ -453,7 +521,13 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       'Kolom Selisih di sini memakai total kabupaten, sehingga dinas yang lebih bisa menutupi dinas yang kurang. ' +
       'Dua kolom terakhir menghitung kekurangan per dinas tanpa saling menutup — itulah yang menandai rekening rawan.',
       KOL, { bold: false, size: 9, color: 'FF98A2B3' })
-    const barisTerbayar = barisAngka(ws, 'Bulan-gaji sudah dibayar', data.bulanGajiTerbayarTotal, 'tingkat kabupaten (seluruh SKPD)')
+    judul(ws,
+      'Perhatikan kolom "Dibayar (kali)": gaji pokok dan tunjangan ikut terbayar di bulan THR dan gaji ke-13 sehingga ' +
+      `angkanya ±${Math.round(data.bulanGajiTerbayarTotal)}, sedangkan iuran BPJS/JKK/JKM hanya sekali sebulan sehingga persis ${bulanTerakhir || '—'}. ` +
+      'Karena itu tiap rekening memakai pembagi sendiri, bukan satu angka untuk semua.',
+      KOL, { bold: false, size: 9, color: 'FF98A2B3' })
+    const barisTerbayar = barisAngka(ws, 'Bulan-gaji sudah dibayar (rata kabupaten)', data.bulanGajiTerbayarTotal,
+      'ringkasan; pembagi tiap rekening ada di kolom "Dibayar (kali)"')
     const barisSisa = barisAngka(ws, 'Bulan-gaji sisa', bulanSisa, rentangSisa)
     const REF_TERBAYAR = `$C$${barisTerbayar.number}`
     const REF_SISA = `$C$${barisSisa.number}`
@@ -466,22 +540,23 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     for (const r of data.rekening || []) {
       const n = ws.rowCount + 1
       const row = ws.addRow([
-        r.kodeRekening, r.namaRekening, r.pagu, r.sp2d,
+        r.kodeRekening, r.namaRekening, r.pagu, r.sp2d, r.dibayar,
         { formula: `C${n}-D${n}` },
-        { formula: `IFERROR(D${n}/${REF_TERBAYAR},0)` },
-        { formula: `F${n}*${REF_SISA}` },
-        { formula: `E${n}-G${n}` },
-        { formula: `IF(H${n}<0,"KURANG","CUKUP")` },
+        { formula: `IFERROR(D${n}/E${n},0)` },
+        { formula: `G${n}*${REF_SISA}` },
+        { formula: `F${n}-H${n}` },
+        { formula: `IF(I${n}<0,"KURANG","CUKUP")` },
         r.dinasKurang || null,
         r.dinasKurang ? r.kekurangan : null,
       ])
       row.font = { size: 10 }
       for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
       row.getCell(1).font = { size: 10, name: 'Consolas' }
-      row.getCell(9).alignment = { horizontal: 'center' }
+      row.getCell(5).alignment = { horizontal: 'center' }
       row.getCell(10).alignment = { horizontal: 'center' }
+      row.getCell(11).alignment = { horizontal: 'center' }
       // Rekening ditandai kalau ada dinas yang kurang, walau total kabupatennya cukup.
-      if (r.selisih < 0 || r.dinasKurang) tandaiKurang(row, KOL, { kolomTeks: [10, 11] })
+      if (r.selisih < 0 || r.dinasKurang) tandaiKurang(row, KOL, { kolomTeks: [11, 12] })
     }
 
     const barisTerakhir = ws.rowCount
@@ -492,22 +567,249 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
         'TOTAL', null,
         { formula: jum('C') },
         { formula: jum('D') },
-        { formula: jum('E') },
-        { formula: `IFERROR(D${n}/${REF_TERBAYAR},0)` },
-        { formula: `F${n}*${REF_SISA}` },
-        { formula: `E${n}-G${n}` },
-        { formula: `IF(H${n}<0,"KURANG","CUKUP")` },
+        null, // laju bayar tiap rekening berbeda — tidak ada artinya dijumlahkan
+        { formula: jum('F') },
+        { formula: jum('G') },
+        { formula: jum('H') },
+        { formula: `F${n}-H${n}` },
+        { formula: `IF(I${n}<0,"KURANG","CUKUP")` },
         null,
-        { formula: jum('K') },
+        { formula: jum('L') },
       ])
       styleBarisTotal(total, KOL)
-      total.getCell(9).alignment = { horizontal: 'center' }
-      aturanSelisihMerah(ws, 'H', barisPertama, total.number)
-      aturanSelisihMerah(ws, 'K', barisPertama, total.number)
+      total.getCell(10).alignment = { horizontal: 'center' }
+      aturanSelisihMerah(ws, 'I', barisPertama, total.number)
+      aturanSelisihMerah(ws, 'L', barisPertama, total.number)
     }
 
-    for (const kol of ['C', 'D', 'F', 'G']) ws.getColumn(kol).numFmt = FMT_RP
-    for (const kol of ['E', 'H', 'K']) ws.getColumn(kol).numFmt = FMT_RP_MERAH
+    for (const kol of ['C', 'D', 'G', 'H']) ws.getColumn(kol).numFmt = FMT_RP
+    for (const kol of ['F', 'I', 'L']) ws.getColumn(kol).numFmt = FMT_RP_MERAH
+    ws.getColumn('E').numFmt = FMT_DESIMAL
+  }
+
+  // ---- Sheet PROYEKSI AKHIR: usulan alokasi per dinas ----
+  //
+  // Susunan kolomnya sengaja mengikuti urutan hitungan supaya bisa ditelusuri
+  // dari kiri ke kanan: Pagu → Realisasi → Rata² → Kebutuhan → Acress → Usulan →
+  // Pergeseran. Kolom Acress (%) berlatar KUNING = boleh diubah; begitu diubah,
+  // Acress (Rp), Usulan, dan Pergeseran ikut terhitung ulang sendiri.
+  const akhir = data.akhir
+  const labelBasis = data.basis === 'tertinggi' ? 'Tertinggi Sekali Bayar' : 'Rata² Tiap Bayar'
+  if (akhir) {
+    const ws = wb.addWorksheet('PROYEKSI AKHIR', { views: [{ state: 'frozen', xSplit: 2, ySplit: 9 }] })
+    const KOLOM = [
+      { header: 'No', width: 5 },
+      { header: 'Nama SKPD', width: 38 },
+      { header: 'Pagu Sekarang', width: 18 },
+      { header: `Realisasi\n(${labelRealisasi})`, width: 18 },
+      { header: 'Dibayar\n(kali)', width: 9 },
+      { header: `${labelBasis}\n(Σ per rekening)`, width: 18 },
+      { header: `Kebutuhan ${bulanSisa} Bln\n(${rentangSisa})`, width: 18 },
+      { header: 'Kebutuhan s.d. Des\n(Realisasi + Sisa Bln)', width: 19 },
+      { header: 'Acress\n(%, boleh diubah)', width: 13 },
+      { header: 'Acress\n(Rp)', width: 17 },
+      { header: 'Usulan\n(Kebutuhan + Acress)', width: 19 },
+      { header: 'Pergeseran\n(Usulan − Pagu)', width: 19 },
+      { header: 'Status', width: 11 },
+    ]
+    const KOL = KOLOM.length
+
+    judul(ws, 'PROYEKSI AKHIR — USULAN ALOKASI ANGGARAN GAJI SAMPAI TUTUP TAHUN', KOL, { size: 14, height: 22 })
+    judul(ws, `TA ${tahun} · Rekening ${prefix}* · Realisasi ${labelRealisasi} · dasar proyeksi: ${labelBasis}`, KOL,
+      { bold: false, size: 10, color: 'FF667085' })
+    judul(ws,
+      'Pagu gaji sekabupaten diperlakukan sebagai satu kantong. Tiap REKENING tiap dinas dijatah kebutuhan riilnya ' +
+      `sampai Desember (realisasi + ${labelBasis.toLowerCase()} × ${bulanSisa} bulan), lalu ditambah acress. Kalau ` +
+      'jumlahnya melebihi isi kantong, kekurangannya disebar ke SEMUA dinas dengan memangkas acress secara ' +
+      'proporsional — kebutuhan gajinya sendiri tidak pernah dipotong, jadi tidak ada dinas yang kehabisan gaji.',
+      KOL, { bold: false, size: 9, color: 'FF667085' })
+    judul(ws,
+      'Kolom "Dibayar (kali)" adalah pembagi milik tiap rekening, dijumlahkan ke tingkat dinas di sini: gaji pokok ' +
+      `ikut terbayar di bulan THR dan gaji ke-13 (±${Math.round(data.bulanGajiTerbayarTotal)} kali), sedangkan iuran ` +
+      `BPJS/JKK/JKM hanya sekali sebulan (${bulanTerakhir || '—'} kali). Rinciannya ada di sheet AKHIR REKENING.`,
+      KOL, { bold: false, size: 9, color: 'FF98A2B3' })
+    judul(ws, ceritaAkhir(akhir), KOL, {
+      bold: true, size: 10, height: 18,
+      color: akhir.cukup ? (akhir.faktorPotong > 0 ? 'FFB54708' : 'FF067647') : MERAH_TEKS,
+    })
+
+    const barisKantong = barisAngka(ws, 'Pagu tersedia (kantong bersama)', akhir.kantong,
+      akhir.jumlahTerkunci
+        ? `${akhir.jumlahTerkunci} dinas tanpa dasar hitung dikunci, pagunya ${rupiah(akhir.paguTerkunci)}`
+        : 'seluruh dinas ikut dihitung ulang')
+    barisKantong.getCell(3).numFmt = FMT_RP
+    barisAngka(ws, 'Acress yang benar-benar terpakai', akhir.persenAkhir,
+      akhir.faktorPotong > 0
+        ? `persen — dipangkas dari ${angkaPersen(akhir.persenCadangan)} untuk menutup kekurangan ${rupiah(akhir.kelebihan)}`
+        : 'persen — tidak perlu dipangkas, pagu mencukupi')
+
+    const header = ws.addRow(KOLOM.map(k => k.header))
+    styleHeader(header, KOL)
+    KOLOM.forEach((k, i) => { ws.getColumn(i + 1).width = k.width })
+
+    const barisPertama = header.number + 1
+    akhir.skpd.forEach((s, i) => {
+      const n = ws.rowCount + 1
+      const row = ws.addRow([
+        i + 1, s.namaSkpd, s.pagu, s.sp2d,
+        s.rataRata > 0 ? Math.round((s.sp2d / s.rataRata) * 100) / 100 : null,
+        s.perBulanRutin,
+        { formula: `F${n}*${bulanSisa}` },
+        { formula: `D${n}+G${n}` },
+        s.terkunci ? null : akhir.persenAkhir / 100,
+        { formula: `IF(I${n}="",0,H${n}*I${n})` },
+        s.terkunci ? s.pagu : { formula: `H${n}+J${n}` },
+        { formula: `K${n}-C${n}` },
+        { formula: s.terkunci ? '"DIKUNCI"' : `IF(L${n}>0,"TAMBAH",IF(L${n}<0,"KURANGI","TETAP"))` },
+      ])
+      row.font = { size: 10 }
+      for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
+      for (const c of [1, 5, 9, 13]) row.getCell(c).alignment = { horizontal: 'center' }
+      // Kolom acress boleh diubah pemakai — ditandai kuning seperti kolom isian
+      // lain di berkas ini.
+      if (!s.terkunci) row.getCell(9).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
+      if (s.tren > 1.01) {
+        const sel = row.getCell(6)
+        sel.font = { ...(sel.font || {}), italic: true, color: { argb: AMBER_TEKS } }
+        sel.note = `Tiga kali bayar terakhir rata-rata ${s.tren}× dari rata-rata tahun berjalan — gajinya sedang naik. ` +
+          `Tertinggi sekali bayar ${rupiah(s.tertinggi)} vs rata² ${rupiah(s.rataRata)}.`
+      }
+      if (s.pergeseran > 0) tandaiTambah(row, KOL, { lewati: [9], kolomTeks: [12] })
+      else if (s.terkunci) tandaiKunci(row, KOL)
+    })
+
+    const barisTerakhir = ws.rowCount
+    if (barisTerakhir >= barisPertama) {
+      const n = barisTerakhir + 1
+      const jum = (kol) => `SUM(${kol}${barisPertama}:${kol}${barisTerakhir})`
+      const total = ws.addRow([
+        'TOTAL', null,
+        { formula: jum('C') }, { formula: jum('D') },
+        null, // laju bayar tiap rekening berbeda — tidak ada artinya dijumlahkan
+        { formula: jum('F') }, { formula: jum('G') }, { formula: jum('H') },
+        null, // acress tiap baris bisa berbeda kalau diubah manual
+        { formula: jum('J') }, { formula: jum('K') }, { formula: jum('L') }, null,
+      ])
+      styleBarisTotal(total, KOL)
+      const catatan = ws.addRow([
+        null,
+        akhir.cukup
+          ? 'Σ Pergeseran harus 0 (yang ditambah = yang ditarik) — usulan ini cukup dengan pergeseran antar dinas, tanpa tambahan anggaran. ' +
+            'Kalau kolom Acress (%) diubah naik, angka itu akan jadi positif: sebesar itulah tambahan anggaran yang diperlukan.'
+          : `Σ Pergeseran = ${rupiah(akhir.defisitRiil)} di atas pagu tersedia — sebesar itulah tambahan anggaran yang masih dibutuhkan.`,
+      ])
+      ws.mergeCells(catatan.number, 2, catatan.number, KOL)
+      catatan.getCell(2).font = { size: 9, italic: true, color: { argb: akhir.cukup ? 'FF667085' : MERAH_TEKS } }
+      catatan.getCell(2).alignment = { vertical: 'middle', wrapText: true }
+      aturanSelisihMerah(ws, 'L', barisPertama, total.number)
+    }
+
+    for (const kol of ['C', 'D', 'F', 'G', 'H', 'J', 'K']) ws.getColumn(kol).numFmt = FMT_RP
+    ws.getColumn('E').numFmt = FMT_DESIMAL
+    ws.getColumn('I').numFmt = '0.00%'
+    ws.getColumn('L').numFmt = FMT_PERGESERAN
+  }
+
+  // ---- Sheet AKHIR REKENING: rincian usulan sampai tingkat rekening ----
+  //
+  // Bentuk datar (satu baris = satu dinas × satu rekening), urut per golongan
+  // pegawai lalu per kode. Kolomnya sama dengan sheet PROYEKSI AKHIR, jadi
+  // acress di sini pun boleh diubah per baris.
+  if (akhir) {
+    const ws = wb.addWorksheet('AKHIR REKENING', { views: [{ state: 'frozen', xSplit: 2, ySplit: 7 }] })
+    const labelGolongan = new Map((akhir.golongan || []).map(g => [g.kunci, g.label]))
+    const KOLOM = [
+      { header: 'Kode SKPD', width: 16 },
+      { header: 'Nama SKPD', width: 34 },
+      { header: 'Gol.', width: 7 },
+      { header: 'Kode Rek', width: 21 },
+      { header: 'Nama Rekening', width: 38 },
+      { header: 'Pagu Sekarang', width: 17 },
+      { header: `Realisasi\n(${labelRealisasi})`, width: 17 },
+      { header: 'Dibayar\n(kali)', width: 9 },
+      { header: `${labelBasis}`, width: 17 },
+      { header: `Kebutuhan ${bulanSisa} Bln`, width: 17 },
+      { header: 'Kebutuhan s.d. Des', width: 18 },
+      { header: 'Acress\n(%, boleh diubah)', width: 13 },
+      { header: 'Acress\n(Rp)', width: 16 },
+      { header: 'Usulan\n(Kebutuhan + Acress)', width: 19 },
+      { header: 'Pergeseran\n(Usulan − Pagu)', width: 18 },
+      { header: 'Catatan', width: 26 },
+    ]
+    const KOL = KOLOM.length
+
+    judul(ws, 'USULAN ALOKASI PER REKENING (SELURUH SKPD)', KOL, { size: 12, height: 20 })
+    judul(ws, `TA ${tahun} · Rekening ${prefix}* · Realisasi ${labelRealisasi} · dasar proyeksi: ${labelBasis}`, KOL,
+      { bold: false, size: 10, color: 'FF667085' })
+    judul(ws,
+      'Satu baris = satu dinas × satu rekening, urut per golongan pegawai lalu per kode — seluruh rekening PNS ' +
+      'berkumpul dulu, baru PPPK. Inilah lampiran usulan pergeserannya. Kolom "Dibayar (kali)" adalah pembagi ' +
+      'rekening itu sendiri: iuran BPJS hanya sekali sebulan, gaji pokok ikut terbayar di bulan THR dan gaji ke-13.',
+      KOL, { bold: false, size: 9, color: 'FF98A2B3' })
+    judul(ws,
+      `Jumlah baris: ${akhir.skpd.reduce((a, s) => a + s.rekening.length, 0)} · ` +
+      `perlu ditambah: ${akhir.skpd.reduce((a, s) => a + s.rekening.filter(r => r.pergeseran > 0).length, 0)} rekening · ` +
+      `pagunya ditarik: ${akhir.skpd.reduce((a, s) => a + s.rekening.filter(r => r.pergeseran < 0).length, 0)} rekening` +
+      (akhir.golongan || []).map(g =>
+        ` │ ${g.label}: kebutuhan ${rupiah(g.kebutuhan)} + acress ${rupiah(g.cadanganAkhir)} = ${rupiah(g.alokasi)}`).join(''),
+      KOL, { bold: false, size: 9, color: 'FF98A2B3' })
+
+    const barisSisa = barisAngka(ws, 'Bulan-gaji sisa', bulanSisa, rentangSisa)
+    const REF_SISA = `$C$${barisSisa.number}`
+
+    const header = ws.addRow(KOLOM.map(k => k.header))
+    styleHeader(header, KOL)
+    KOLOM.forEach((k, i) => { ws.getColumn(i + 1).width = k.width })
+
+    const barisPertama = header.number + 1
+    for (const s of akhir.skpd) {
+      for (const r of s.rekening) {
+        const n = ws.rowCount + 1
+        const row = ws.addRow([
+          s.kodeSkpd, s.namaSkpd, labelGolongan.get(r.golongan) || r.golongan,
+          r.kodeRekening, r.namaRekening,
+          r.pagu, r.sp2d, r.dibayar || null, r.perBulanRutin,
+          { formula: `I${n}*${REF_SISA}` },
+          { formula: `G${n}+J${n}` },
+          s.terkunci ? null : akhir.persenAkhir / 100,
+          { formula: `IF(L${n}="",0,K${n}*L${n})` },
+          s.terkunci ? r.pagu : { formula: `K${n}+M${n}` },
+          { formula: `N${n}-F${n}` },
+          s.terkunci ? 'Dinas dikunci — tanpa dasar hitung'
+            : r.tanpaRealisasi ? 'Belum pernah dibayar — pagu ditarik penuh'
+            : r.dibayarPerkiraan ? 'Belum ada realisasi bulanan — pembagi dinas dipinjam'
+            : null,
+        ])
+        row.font = { size: 10 }
+        for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
+        row.getCell(1).font = { size: 10, name: 'Consolas' }
+        row.getCell(4).font = { size: 10, name: 'Consolas' }
+        for (const c of [3, 8, 12]) row.getCell(c).alignment = { horizontal: 'center' }
+        row.getCell(16).font = { size: 9, italic: true, color: { argb: 'FF98A2B3' } }
+        if (!s.terkunci) row.getCell(12).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
+        if (r.pergeseran > 0) tandaiTambah(row, KOL, { lewati: [12], kolomTeks: [15] })
+        else if (s.terkunci) tandaiKunci(row, KOL)
+      }
+    }
+
+    const barisTerakhir = ws.rowCount
+    if (barisTerakhir >= barisPertama) {
+      const jum = (kol) => `SUM(${kol}${barisPertama}:${kol}${barisTerakhir})`
+      const total = ws.addRow([
+        'TOTAL', null, null, null, null,
+        { formula: jum('F') }, { formula: jum('G') }, null,
+        { formula: jum('I') }, { formula: jum('J') }, { formula: jum('K') }, null,
+        { formula: jum('M') }, { formula: jum('N') }, { formula: jum('O') }, null,
+      ])
+      styleBarisTotal(total, KOL)
+      ws.autoFilter = { from: { row: header.number, column: 1 }, to: { row: barisTerakhir, column: KOL } }
+      aturanSelisihMerah(ws, 'O', barisPertama, total.number)
+    }
+
+    for (const kol of ['F', 'G', 'I', 'J', 'K', 'M', 'N']) ws.getColumn(kol).numFmt = FMT_RP
+    ws.getColumn('H').numFmt = FMT_DESIMAL
+    ws.getColumn('L').numFmt = '0.00%'
+    ws.getColumn('O').numFmt = FMT_PERGESERAN
   }
 
   return wb.xlsx.writeBuffer()

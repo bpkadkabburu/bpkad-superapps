@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { klausaAwalanRekening } from '../utils/kodeRekening.js'
+import { hitungProyeksiAkhir } from '../utils/proyeksiAkhir.js'
 
 const router = new Hono()
 router.use('*', requireAuth)
@@ -27,14 +28,22 @@ function median(values) {
 
 const num = (v) => Number(v) || 0
 
+// Baris dianggap sudah cair kalau nomor SP2D-nya terisi sungguhan. Dipakai di
+// semua query di berkas ini supaya definisinya tidak sempat menyimpang.
+const SP2D_SAH = "nomor_sp2d IS NOT NULL AND LOWER(TRIM(nomor_sp2d)) NOT IN ('', 'null', '-')"
+
 // Proyeksi kebutuhan belanja gaji & tunjangan: pagu vs realisasi (SP2D) per SKPD
 // → per rekening, plus realisasi per bulan untuk mengukur berapa "bulan-gaji"
 // yang sudah dibayar (8 bulan kalender bisa berarti 10 bulan-gaji karena THR dan
 // gaji ke-13). Perhitungan proyeksinya sendiri dilakukan di Excel/frontend supaya
 // pembaginya bisa diubah pemakai.
-export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw }) {
+export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basisRaw }) {
   const prefix = bersihkanPrefix(prefixRaw)
-  const kosong = { prefix, skpd: [], rekening: [], bulanList: [], totals: { pagu: 0, spp: 0, sp2d: 0 } }
+  // 'rata'      : rata-rata tiap kali bayar (total ÷ berapa kali dibayar)
+  // 'tertinggi' : nilai sekali bayar yang paling tinggi — dipakai kalau ingin
+  //               berjaga-jaga terhadap kemungkinan gaji naik di sisa tahun.
+  const basis = basisRaw === 'tertinggi' ? 'tertinggi' : 'rata'
+  const kosong = { prefix, basis, skpd: [], rekening: [], bulanList: [], totals: { pagu: 0, spp: 0, sp2d: 0 } }
   if (!tahun) return kosong
 
   const [taRows] = await db.query('SELECT id FROM tahun_anggaran WHERE tahun = ?', [tahun])
@@ -56,21 +65,34 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw }) {
   const [realisasiRows] = await db.query(
     `SELECT kode_skpd, nama_skpd, kode_rekening, nama_rekening,
        SUM(nilai_realisasi) AS spp,
-       SUM(CASE WHEN nomor_sp2d IS NOT NULL AND LOWER(TRIM(nomor_sp2d)) NOT IN ('', 'null', '-')
-                THEN nilai_realisasi ELSE 0 END) AS sp2d
+       SUM(CASE WHEN ${SP2D_SAH} THEN nilai_realisasi ELSE 0 END) AS sp2d
      FROM dokumen_realisasi
      WHERE tahun_id = ? AND ${awalan.sql}
      GROUP BY kode_skpd, nama_skpd, kode_rekening, nama_rekening`,
     [tahun_id, ...awalan.params]
   )
 
+  // Jumlah dokumen SP2D per bulan ikut dihitung: satu bulan bisa berisi lebih
+  // dari satu SP2D (gaji induk + rapel/susulan), dan kalau itu tidak kelihatan,
+  // nilai bulan terakhir gampang disalahartikan sebagai "gaji satu bulan".
   const [bulanRows] = await db.query(
     `SELECT kode_skpd, bulan,
-       SUM(CASE WHEN nomor_sp2d IS NOT NULL AND LOWER(TRIM(nomor_sp2d)) NOT IN ('', 'null', '-')
-                THEN nilai_realisasi ELSE 0 END) AS sp2d
+       SUM(CASE WHEN ${SP2D_SAH} THEN nilai_realisasi ELSE 0 END) AS sp2d,
+       COUNT(DISTINCT CASE WHEN ${SP2D_SAH} THEN nomor_sp2d END) AS jumlah_sp2d
      FROM dokumen_realisasi
      WHERE tahun_id = ? AND ${awalan.sql} AND bulan IS NOT NULL
      GROUP BY kode_skpd, bulan`,
+    [tahun_id, ...awalan.params]
+  )
+
+  // Realisasi per bulan sampai tingkat rekening — dasar kroscek kebutuhan: nilai
+  // bulan terakhir dikali sisa bulan harusnya mendekati angka proyeksinya.
+  const [bulanRekRows] = await db.query(
+    `SELECT kode_skpd, kode_rekening, bulan,
+       SUM(CASE WHEN ${SP2D_SAH} THEN nilai_realisasi ELSE 0 END) AS sp2d
+     FROM dokumen_realisasi
+     WHERE tahun_id = ? AND ${awalan.sql} AND bulan IS NOT NULL
+     GROUP BY kode_skpd, kode_rekening, bulan`,
     [tahun_id, ...awalan.params]
   )
 
@@ -84,7 +106,7 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw }) {
       s = {
         kodeSkpd: kode, namaSkpd: nama || kode,
         pagu: 0, spp: 0, sp2d: 0,
-        perBulan: {}, rekening: new Map(),
+        perBulan: {}, sp2dPerBulan: {}, rekening: new Map(),
       }
       skpdMap.set(kode, s)
     } else if (!s.namaSkpd && nama) {
@@ -127,6 +149,18 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw }) {
     bulanSet.add(bulan)
     const s = ambilSkpd(row.kode_skpd, null)
     s.perBulan[bulan] = (s.perBulan[bulan] || 0) + num(row.sp2d)
+    s.sp2dPerBulan[bulan] = (s.sp2dPerBulan[bulan] || 0) + num(row.jumlah_sp2d)
+  }
+
+  // `${kode_skpd}|${kode_rekening}` -> { bulan: nilai }
+  const rekPerBulan = new Map()
+  for (const row of bulanRekRows) {
+    const bulan = Number(row.bulan)
+    if (!bulan) continue
+    const kunci = `${row.kode_skpd}|${row.kode_rekening}`
+    let perBulan = rekPerBulan.get(kunci)
+    if (!perBulan) { perBulan = {}; rekPerBulan.set(kunci, perBulan) }
+    perBulan[bulan] = (perBulan[bulan] || 0) + num(row.sp2d)
   }
 
   const bulanList = Array.from(bulanSet).sort((a, b) => a - b)
@@ -136,19 +170,93 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw }) {
   // ke pemakai, cukup dari bulan terakhir yang sudah ada realisasinya.
   const bulanSisa = bulanTerakhir ? Math.max(0, 12 - bulanTerakhir) : 0
 
+  const bulat2 = (n) => Math.round((Number(n) || 0) * 100) / 100
+
   const skpd = Array.from(skpdMap.values())
     .map(s => {
       const nilaiBulan = bulanList.map(b => s.perBulan[b] || 0)
       const medianBulan = median(nilaiBulan)
-      // Berapa bulan-gaji yang sebetulnya sudah dibayar = total / nilai satu bulan
-      // rutin. 8 bulan kalender bisa jadi ~10 bulan-gaji karena THR & gaji ke-13.
-      // Angka inilah pembagi proyeksi, jadi tiap dinas pakai laju bayarnya sendiri
-      // (dinas yang pembayarannya tertinggal tidak ikut terhitung 10 bulan).
-      const bulanGajiTerbayar = medianBulan > 0
-        ? Math.round((s.sp2d / medianBulan) * 100) / 100
+      // Laju bayar tingkat dinas — dipakai sebagai cadangan kalau satu rekening
+      // belum punya realisasi bulanan sendiri, dan sebagai konteks di layar.
+      const bulanGajiTerbayarDinas = medianBulan > 0
+        ? bulat2(s.sp2d / medianBulan)
         : (bulanTerakhir || 0)
-      const perBulanRutin = bulanGajiTerbayar > 0 ? s.sp2d / bulanGajiTerbayar : 0
+
+      // Bulan terakhir DINAS INI, bukan bulan terakhir kabupaten — dinas yang
+      // pembayarannya tertinggal harus kelihatan tertinggal, bukan tampil nol.
+      const bulanIsi = Object.keys(s.perBulan).map(Number).filter(b => s.perBulan[b] > 0)
+      const bulanTerakhirSkpd = bulanIsi.length ? Math.max(...bulanIsi) : null
+      const realisasiTerakhir = bulanTerakhirSkpd ? s.perBulan[bulanTerakhirSkpd] : 0
+      const sp2dTerakhir = bulanTerakhirSkpd ? (s.sp2dPerBulan[bulanTerakhirSkpd] || 0) : 0
+
+      // Proyeksi dihitung PER REKENING, bukan sekali di tingkat dinas. Tiap
+      // rekening punya laju bayarnya sendiri: gaji pokok dan tunjangan ikut
+      // terbayar di bulan THR dan gaji ke-13 (≈10 kali dalam 8 bulan kalender),
+      // sedangkan iuran BPJS/JKK/JKM hanya sekali sebulan (persis 8 kali).
+      // Memakai satu pembagi dinas untuk semuanya membuat kebutuhan iuran kurang
+      // ±23% sementara gaji pokok berlebih — di total kabupaten nyaris saling
+      // menutup, tapi angka per rekeningnya (justru yang dipakai orang) meleset.
+      const rekening = Array.from(s.rekening.values())
+        .map(r => {
+          const perBulan = rekPerBulan.get(`${s.kodeSkpd}|${r.kodeRekening}`)
+          const nilaiRek = bulanList.map(b => perBulan?.[b] || 0)
+          const medianRek = median(nilaiRek)
+          const dibayar = medianRek > 0 ? bulat2(r.sp2d / medianRek) : bulanGajiTerbayarDinas
+          const rataRata = dibayar > 0 ? r.sp2d / dibayar : 0
+
+          // Nilai SEKALI BAYAR tiap bulan. Bulan yang nilainya ±2× rata-rata
+          // memuat dua kali pembayaran (gaji rutin + THR / gaji ke-13, atau dua
+          // bulan gaji yang cair berbarengan), jadi dibagi dulu sebelum bulan
+          // yang satu dibandingkan dengan bulan yang lain.
+          const perBayar = nilaiRek
+            .filter(n => n > 0)
+            .map(n => n / Math.max(1, Math.round(rataRata > 0 ? n / rataRata : 1)))
+          const tertinggi = perBayar.length ? Math.max(...perBayar) : 0
+          const terendah = perBayar.length ? Math.min(...perBayar) : 0
+          // Tiga kali bayar terakhir dibanding rata-rata seluruh tahun berjalan.
+          // Di atas 1 berarti belakangan naik — dasar proyeksi versi rata-rata
+          // jadi kerendahan, dan di situlah "tertinggi" layak dipakai.
+          const akhir3 = perBayar.slice(-3)
+          const rataAkhir = akhir3.length ? akhir3.reduce((a, n) => a + n, 0) / akhir3.length : 0
+          const tren = rataRata > 0 ? Math.round((rataAkhir / rataRata) * 1000) / 1000 : 0
+
+          const perBulanRutinRek = basis === 'tertinggi' ? tertinggi : rataRata
+          const proyeksiRek = perBulanRutinRek * bulanSisa
+          return {
+            ...r,
+            sisa: r.pagu - r.sp2d,
+            // Bulan yang diambil sama dengan bulan terakhir dinasnya, supaya Σ
+            // rekening = nilai bulan terakhir dinas dan angkanya bisa diadu.
+            realisasiTerakhir: bulanTerakhirSkpd ? (perBulan?.[bulanTerakhirSkpd] || 0) : 0,
+            medianBulan: medianRek,
+            dibayar,
+            // true = rekening ini belum punya realisasi bulanan sendiri, jadi
+            // pembagi dinas yang dipinjam.
+            dibayarPerkiraan: medianRek <= 0,
+            rataRata,
+            tertinggi,
+            terendah,
+            rataAkhir,
+            tren,
+            perBulanRutin: perBulanRutinRek,
+            proyeksi: proyeksiRek,
+            selisih: (r.pagu - r.sp2d) - proyeksiRek,
+          }
+        })
+        .sort((a, b) => String(a.kodeRekening).localeCompare(String(b.kodeRekening), 'id', { numeric: true }))
+
+      // Angka dinas disusun dari bawah, jadi Σ rekening = angka dinas persis.
+      const perBulanRutin = rekening.reduce((a, r) => a + r.perBulanRutin, 0)
+      const rataRataDinas = rekening.reduce((a, r) => a + r.rataRata, 0)
+      const tertinggiDinas = rekening.reduce((a, r) => a + r.tertinggi, 0)
+      const rataAkhirDinas = rekening.reduce((a, r) => a + r.rataAkhir, 0)
       const proyeksi = perBulanRutin * bulanSisa
+      // Laju bayar efektif dinas: pembagi yang, kalau dipakai ke total realisasi,
+      // menghasilkan proyeksi yang sama dengan jumlah per rekening di atas.
+      const bulanGajiTerbayar = perBulanRutin > 0
+        ? bulat2(s.sp2d / perBulanRutin)
+        : bulanGajiTerbayarDinas
+
       return {
         kodeSkpd: s.kodeSkpd,
         namaSkpd: s.namaSkpd,
@@ -163,19 +271,19 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw }) {
         // (dinas belum ada realisasi bulanan sama sekali).
         pembagiPerkiraan: medianBulan <= 0,
         perBulanRutin,
+        rataRata: rataRataDinas,
+        tertinggi: tertinggiDinas,
+        rataAkhir: rataAkhirDinas,
+        // >1 = tiga kali bayar terakhir lebih tinggi dari rata-rata tahun berjalan.
+        tren: rataRataDinas > 0 ? Math.round((rataAkhirDinas / rataRataDinas) * 1000) / 1000 : 0,
+        bulanTerakhirSkpd,
+        realisasiTerakhir,
+        // Berapa dokumen SP2D yang membentuk nilai bulan terakhir itu. Lebih dari
+        // satu berarti nilainya bukan "satu bulan gaji" polos.
+        sp2dTerakhir,
         proyeksi,
         selisih: (s.pagu - s.sp2d) - proyeksi,
-        rekening: Array.from(s.rekening.values())
-          .map(r => {
-            const proyeksiRek = bulanGajiTerbayar > 0 ? (r.sp2d / bulanGajiTerbayar) * bulanSisa : 0
-            return {
-              ...r,
-              sisa: r.pagu - r.sp2d,
-              proyeksi: proyeksiRek,
-              selisih: (r.pagu - r.sp2d) - proyeksiRek,
-            }
-          })
-          .sort((a, b) => String(a.kodeRekening).localeCompare(String(b.kodeRekening), 'id', { numeric: true })),
+        rekening,
       }
     })
     .sort((a, b) => String(a.kodeSkpd).localeCompare(String(b.kodeSkpd), 'id', { numeric: true }))
@@ -192,13 +300,15 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw }) {
   totals.sisa = totals.pagu - totals.sp2d
   totals.selisih = totals.sisa - totals.proyeksi
 
-  // Bulan-gaji terbayar tingkat kabupaten (dari total realisasi per bulan) —
-  // dipakai untuk rekap lintas dinas per rekening dan sebagai info di header.
   const totalPerBulan = bulanList.map(b => skpd.reduce((a, s) => a + (s.perBulan[b] || 0), 0))
   const medianTotal = median(totalPerBulan)
-  const bulanGajiTerbayarTotal = medianTotal > 0
-    ? Math.round((totals.sp2d / medianTotal) * 100) / 100
-    : (bulanTerakhir || 0)
+  // Laju bayar efektif sekabupaten. Disusun dari proyeksi per rekening yang sudah
+  // dijumlahkan, bukan dihitung ulang dari median total — supaya angka di header
+  // konsisten dengan angka di tabel, bukan versi lain yang mirip-mirip.
+  const perBulanRutinTotal = skpd.reduce((a, s) => a + s.perBulanRutin, 0)
+  const bulanGajiTerbayarTotal = perBulanRutinTotal > 0
+    ? Math.round((totals.sp2d / perBulanRutinTotal) * 100) / 100
+    : (medianTotal > 0 ? Math.round((totals.sp2d / medianTotal) * 100) / 100 : (bulanTerakhir || 0))
 
   // Rekap lintas dinas per rekening — untuk melihat komponen mana yang paling
   // rawan kurang (mis. gaji pokok PPPK).
@@ -214,10 +324,18 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw }) {
           // total kabupaten (dinas yang lebih menutup dinas yang kurang), jadi
           // kekurangan per dinas dihitung terpisah dan tidak disaling-hapuskan.
           dinasKurang: 0, kekurangan: 0, daftarKurang: [],
+          perBulanRutin: 0, rataRata: 0, tertinggi: 0, rataAkhir: 0, proyeksi: 0,
         }
         rekeningMap.set(r.kodeRekening, g)
       }
       g.pagu += r.pagu; g.spp += r.spp; g.sp2d += r.sp2d
+      // Dijumlahkan dari dinas, bukan dihitung ulang dengan pembagi kabupaten:
+      // laju bayar tiap rekening berbeda dan itu yang harus dipertahankan.
+      g.perBulanRutin += r.perBulanRutin
+      g.rataRata += r.rataRata
+      g.tertinggi += r.tertinggi
+      g.rataAkhir += r.rataAkhir
+      g.proyeksi += r.proyeksi
       if (r.selisih < 0) {
         g.dinasKurang += 1
         g.kekurangan += r.selisih
@@ -232,19 +350,20 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw }) {
     g.daftarKurang.sort((a, b) => a.selisih - b.selisih)
   }
   const rekening = Array.from(rekeningMap.values())
-    .map(r => {
-      const proyeksi = bulanGajiTerbayarTotal > 0 ? (r.sp2d / bulanGajiTerbayarTotal) * bulanSisa : 0
-      return {
-        ...r,
-        sisa: r.pagu - r.sp2d,
-        proyeksi,
-        selisih: (r.pagu - r.sp2d) - proyeksi,
-      }
-    })
+    .map(r => ({
+      ...r,
+      sisa: r.pagu - r.sp2d,
+      // Berapa kali rekening ini dibayar sekabupaten — inilah angka yang
+      // membedakan gaji pokok (ikut THR & gaji ke-13) dari iuran BPJS.
+      dibayar: r.rataRata > 0 ? Math.round((r.sp2d / r.rataRata) * 100) / 100 : 0,
+      tren: r.rataRata > 0 ? Math.round((r.rataAkhir / r.rataRata) * 1000) / 1000 : 0,
+      selisih: (r.pagu - r.sp2d) - r.proyeksi,
+    }))
     .sort((a, b) => String(a.kodeRekening).localeCompare(String(b.kodeRekening), 'id', { numeric: true }))
 
   return {
     prefix,
+    basis,
     tahun: Number(tahun),
     bulanList,
     bulanTerakhir,
@@ -262,7 +381,9 @@ router.get('/', async (c) => {
   const hasil = await hitungProyeksiGaji({
     tahun: c.req.query('tahun'),
     prefix: c.req.query('prefix'),
+    basis: c.req.query('basis'),
   })
+  hasil.akhir = hitungProyeksiAkhir(hasil, { persen: c.req.query('persen') })
   return c.json(hasil)
 })
 
