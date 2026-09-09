@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
-import { klausaAwalanRekening } from '../utils/kodeRekening.js'
+import { klausaAwalanRekening, subRincianRekening } from '../utils/kodeRekening.js'
 import { hitungProyeksiAkhir } from '../utils/proyeksiAkhir.js'
 
 const router = new Hono()
@@ -224,6 +224,10 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
           const proyeksiRek = perBulanRutinRek * bulanSisa
           return {
             ...r,
+            // Segmen sub rincian objek memisahkan golongan pegawai (…00001 = PNS,
+            // …00002 = PPPK). Dibawa ke payload supaya Excel bisa mengelompokkan
+            // rekening per golongan tanpa menebak-nebak dari nama rekening.
+            golongan: subRincianRekening(r.kodeRekening) || '-',
             sisa: r.pagu - r.sp2d,
             // Bulan yang diambil sama dengan bulan terakhir dinasnya, supaya Σ
             // rekening = nilai bulan terakhir dinas dan angkanya bisa diadu.
@@ -319,6 +323,7 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
       if (!g) {
         g = {
           kodeRekening: r.kodeRekening, namaRekening: r.namaRekening,
+          golongan: r.golongan,
           pagu: 0, spp: 0, sp2d: 0,
           // Kekurangan tingkat rekening bisa tertutup kalau hanya dilihat dari
           // total kabupaten (dinas yang lebih menutup dinas yang kurang), jadi

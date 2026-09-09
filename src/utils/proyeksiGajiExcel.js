@@ -35,6 +35,8 @@ const MERAH_TEKS = 'FFB42318'
 const AMBER = 'FFFDF3E3'      // baris yang pagunya perlu ditambah (Proyeksi Akhir)
 const AMBER_TEKS = 'FFB54708'
 const KUNCI = 'FFF4F5F7'      // dinas yang pagunya dikunci apa adanya
+const GOL_BAND = 'FFE7EDF7'   // baris pembatas blok golongan pegawai (PNS / PPPK)
+const GOL_SUB = 'FFF4F8FD'    // baris SUBTOTAL tiap golongan
 
 // Nama sheet Excel: maks 31 karakter, tidak boleh memuat : \ / ? * [ ]
 // Nomor urut di depan menjamin nama tetap unik walau nama dinas terpotong.
@@ -179,6 +181,90 @@ function barisAngka(ws, label, nilai, keterangan) {
   return row
 }
 
+// ---- Pemisahan golongan pegawai (PNS / PPPK) ----
+//
+// Kode rekening gaji berselang-seling: gaji pokok PNS, gaji pokok PPPK,
+// tunjangan keluarga PNS, tunjangan keluarga PPPK, dan seterusnya. Dibaca urut
+// kode seperti itu, angka PNS dan PPPK tercampur dan tidak bisa dijumlahkan
+// dengan mata. Karena itu setiap sheet yang turun sampai tingkat rekening
+// dipecah jadi blok: seluruh PNS dulu (sub rincian 00001), baru PPPK (00002),
+// masing-masing punya baris SUBTOTAL sendiri.
+
+// Label golongan diambil dari kata terakhir nama rekening ("Belanja Gaji Pokok
+// PNS" -> PNS), sama seperti di backend — bukan dipaku ke kode, supaya golongan
+// baru atau kelompok rekening lain tetap terbaca benar.
+function petaLabelGolongan(data) {
+  const kata = new Map()
+  const semua = [...(data.rekening || []), ...(data.skpd || []).flatMap(s => s.rekening || [])]
+  for (const r of semua) {
+    const kunci = r.golongan || '-'
+    if (!kata.has(kunci)) kata.set(kunci, new Set())
+    const terakhir = String(r.namaRekening || '').trim().split(/\s+/).pop()
+    if (terakhir) kata.get(kunci).add(terakhir.toUpperCase())
+  }
+  const peta = new Map()
+  for (const [kunci, set] of kata) {
+    peta.set(kunci, set.size === 1 ? [...set][0] : `Sub rincian ${kunci}`)
+  }
+  return peta
+}
+
+// [{ kunci, label, rows }] urut golongan (PNS sebelum PPPK), isinya urut kode.
+function kelompokkanGolongan(rekening, peta) {
+  const map = new Map()
+  for (const r of rekening || []) {
+    const kunci = r.golongan || '-'
+    if (!map.has(kunci)) map.set(kunci, [])
+    map.get(kunci).push(r)
+  }
+  const urut = (a, b) => String(a).localeCompare(String(b), 'id', { numeric: true })
+  return [...map.entries()]
+    .sort((a, b) => urut(a[0], b[0]))
+    .map(([kunci, rows]) => ({
+      kunci,
+      label: peta.get(kunci) || kunci,
+      rows: rows.sort((a, b) => urut(a.kodeRekening, b.kodeRekening)),
+    }))
+}
+
+// Baris pembatas di atas tiap blok golongan.
+function barisBandGolongan(ws, g, kolomTerakhir) {
+  const row = ws.addRow([g.label, `${g.rows.length} rekening`])
+  for (let c = 1; c <= kolomTerakhir; c++) {
+    const cell = row.getCell(c)
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GOL_BAND } }
+    cell.border = garis()
+  }
+  row.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF1D2939' } }
+  row.getCell(2).font = { size: 9, italic: true, color: { argb: 'FF667085' } }
+  row.height = 17
+  return row
+}
+
+function styleSubtotal(row, kolomTerakhir) {
+  row.font = { bold: true, size: 10 }
+  for (let c = 1; c <= kolomTerakhir; c++) {
+    const cell = row.getCell(c)
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GOL_SUB } }
+    cell.border = garis()
+  }
+}
+
+// ---- Rincian isian Sim Gaji ----
+//
+// Di SIM Gaji tunjangan keluarga tidak berdiri sendiri: yang tercetak di sana
+// adalah tunjangan istri dan tunjangan anak, terpisah. Rekeningnya cuma satu.
+// Supaya angka SIM Gaji bisa disalin apa adanya tanpa dijumlah dulu di kertas,
+// baris rekening seperti itu dikasih baris rincian di bawahnya — yang diisi
+// baris rinciannya, dan kolom Sim Gaji baris induk menjumlahkan sendiri.
+const RINCIAN_SIM = [
+  { cocok: /tunjangan\s+keluarga/i, rincian: ['Tunjangan Istri', 'Tunjangan Anak'] },
+]
+
+function rincianSim(namaRekening) {
+  return RINCIAN_SIM.find(r => r.cocok.test(String(namaRekening || '')))?.rincian || null
+}
+
 function jumlahRekeningKurang(skpd) {
   return (skpd.rekening || []).filter(r => r.selisih < 0).length
 }
@@ -204,6 +290,10 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
   const labelRealisasi = bulanTerakhir
     ? `SP2D s.d. ${NAMA_BULAN[bulanTerakhir]} ${tahun}`
     : 'SP2D (belum ada data bulan)'
+
+  // Peta sub rincian objek -> label golongan (00001 -> PNS, 00002 -> PPPK).
+  // Dipakai semua sheet tingkat rekening supaya namanya seragam.
+  const petaGol = petaLabelGolongan(data)
 
   const wb = new ExcelJS.Workbook()
   wb.creator = 'BPKAD Superapps'
@@ -263,8 +353,8 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
 
   data.skpd.forEach((s, idx) => {
     const nama = namaSheet(idx + 1, s.namaSkpd)
-    // ySplit 5 = judul(2) + dua sel angka + baris header ikut terkunci.
-    const ws = wb.addWorksheet(nama, { views: [{ state: 'frozen', xSplit: 2, ySplit: 5 }] })
+    // ySplit 6 = judul(3) + dua sel angka + baris header ikut terkunci.
+    const ws = wb.addWorksheet(nama, { views: [{ state: 'frozen', xSplit: 2, ySplit: 6 }] })
 
     const KOLOM = [
       { header: 'Kode Rek', width: 21 },
@@ -285,6 +375,9 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     judul(ws, s.namaSkpd, KOL, { size: 12, height: 20 })
     judul(ws, `Kode SKPD ${s.kodeSkpd} · TA ${tahun} · Rekening ${prefix}* · Realisasi ${labelRealisasi}`, KOL,
       { bold: false, size: 10, color: 'FF667085' })
+    judul(ws, 'Rekening dipisah per golongan pegawai — blok PNS di atas, PPPK di bawah, masing-masing ditutup baris SUBTOTAL. ' +
+      'Tunjangan keluarga punya dua baris rincian (istri dan anak) mengikuti SIM Gaji: isi kedua baris itu, kolom Sim Gaji baris induknya terjumlah sendiri.', KOL,
+      { bold: false, size: 9, color: 'FF98A2B3' })
 
     // Dua sel ini yang dipakai seluruh rumus di sheet ini. Nomor barisnya dipakai
     // langsung untuk menyusun referensi, jadi menambah/mengurangi baris judul di
@@ -307,41 +400,98 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     const REF_SISA = `$C$${barisSisa.number}`
     const barisPertama = header.number + 1
 
-    for (const r of s.rekening) {
-      const n = ws.rowCount + 1
-      const row = ws.addRow([
-        r.kodeRekening,
-        r.namaRekening,
-        r.pagu,
-        r.sp2d,
-        r.dibayar,
-        null, // Sim Gaji — isian manual
-        { formula: `C${n}-D${n}` },
-        { formula: `IFERROR(D${n}/E${n},0)` },
-        { formula: `H${n}*${REF_SISA}` },
-        { formula: `IF(F${n}="","",F${n}*${REF_SISA})` },
-        // Selama Sim Gaji belum diisi, selisih memakai kebutuhan versi realisasi.
-        { formula: `G${n}-IF(F${n}="",I${n},J${n})` },
-        { formula: `IF(K${n}<0,"KURANG","CUKUP")` },
-      ])
-      row.font = { size: 10 }
-      for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
-      row.getCell(1).font = { size: 10, name: 'Consolas' }
-      row.getCell(5).alignment = { horizontal: 'center' }
-      if (r.dibayarPerkiraan) {
-        row.getCell(5).font = { size: 10, italic: true, color: { argb: 'FF98A2B3' } }
-        row.getCell(5).note = 'Rekening ini belum punya realisasi bulanan sendiri — dipakai laju bayar dinas.'
+    // Rekening dipecah per golongan: seluruh PNS dulu, baru PPPK, masing-masing
+    // ditutup baris SUBTOTAL sendiri.
+    const subtotalGol = []
+    for (const g of kelompokkanGolongan(s.rekening, petaGol)) {
+      barisBandGolongan(ws, g, KOL)
+      const golAwal = ws.rowCount + 1
+      const selRincianGol = [] // sel Sim Gaji baris rincian — dikurangkan dari SUBTOTAL
+      for (const r of g.rows) {
+        const n = ws.rowCount + 1
+        const rincian = rincianSim(r.namaRekening)
+        const selRincian = (rincian || []).map((_, i) => `F${n + 1 + i}`)
+        const row = ws.addRow([
+          r.kodeRekening,
+          r.namaRekening,
+          r.pagu,
+          r.sp2d,
+          r.dibayar,
+          // Sim Gaji — isian manual, kecuali rekening yang di SIM Gaji terpecah:
+          // di situ angkanya dijumlahkan dari baris rincian di bawahnya.
+          rincian
+            ? { formula: `IF(COUNT(${selRincian.join(',')})=0,"",SUM(${selRincian.join(',')}))` }
+            : null,
+          { formula: `C${n}-D${n}` },
+          { formula: `IFERROR(D${n}/E${n},0)` },
+          { formula: `H${n}*${REF_SISA}` },
+          { formula: `IF(F${n}="","",F${n}*${REF_SISA})` },
+          // Selama Sim Gaji belum diisi, selisih memakai kebutuhan versi realisasi.
+          { formula: `G${n}-IF(F${n}="",I${n},J${n})` },
+          { formula: `IF(K${n}<0,"KURANG","CUKUP")` },
+        ])
+        row.font = { size: 10 }
+        for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
+        row.getCell(1).font = { size: 10, name: 'Consolas' }
+        row.getCell(5).alignment = { horizontal: 'center' }
+        if (r.dibayarPerkiraan) {
+          row.getCell(5).font = { size: 10, italic: true, color: { argb: 'FF98A2B3' } }
+          row.getCell(5).note = 'Rekening ini belum punya realisasi bulanan sendiri — dipakai laju bayar dinas.'
+        }
+        row.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rincian ? HIJAU : KUNING } }
+        if (rincian) {
+          row.getCell(6).note = `Terisi sendiri dari baris ${rincian.join(' + ')} di bawahnya — ` +
+            'di SIM Gaji keduanya terpisah, rekeningnya cuma satu.'
+        }
+        row.getCell(12).alignment = { horizontal: 'center' }
+        // Rekening yang anggarannya tidak cukup sampai akhir tahun.
+        if (r.selisih < 0) tandaiKurang(row, KOL, { lewati: [6], kolomTeks: [11, 12] })
+
+        // Baris rincian: yang diisi cuma kolom Sim Gaji, sisanya sengaja kosong —
+        // anggaran dan realisasinya memang cuma ada di tingkat rekening (baris induk).
+        for (const label of rincian || []) {
+          const m = ws.rowCount + 1
+          const baris = ws.addRow([null, `        \u21b3 ${label} (isi manual)`])
+          baris.font = { size: 10, italic: true, color: { argb: 'FF667085' } }
+          for (let c = 1; c <= KOL; c++) baris.getCell(c).border = garis()
+          const sel = baris.getCell(6)
+          sel.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
+          sel.font = { size: 10 }
+          selRincianGol.push(`F${m}`)
+        }
       }
-      row.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
-      row.getCell(12).alignment = { horizontal: 'center' }
-      // Rekening yang anggarannya tidak cukup sampai akhir tahun.
-      if (r.selisih < 0) tandaiKurang(row, KOL, { lewati: [6], kolomTeks: [11, 12] })
+
+      const golAkhir = ws.rowCount
+      const ns = golAkhir + 1
+      const jumGol = (kol) => `SUM(${kol}${golAwal}:${kol}${golAkhir})`
+      // Baris rincian ikut kena rentang SUM bersama baris induk yang sudah
+      // menjumlahkannya, jadi nilainya dikurangkan sekali supaya tidak dobel.
+      const jumSim = selRincianGol.length ? `${jumGol('F')}-${selRincianGol.join('-')}` : jumGol('F')
+      const sub = ws.addRow([
+        'SUBTOTAL', g.label,
+        { formula: jumGol('C') },
+        { formula: jumGol('D') },
+        null, // laju bayar tiap rekening berbeda — tidak ada artinya dijumlahkan
+        { formula: jumSim },
+        { formula: jumGol('G') },
+        { formula: jumGol('H') },
+        { formula: jumGol('I') },
+        { formula: `IF(F${ns}=0,"",F${ns}*${REF_SISA})` },
+        { formula: `G${ns}-IF(F${ns}=0,I${ns},J${ns})` },
+        { formula: `IF(K${ns}<0,"KURANG","CUKUP")` },
+      ])
+      styleSubtotal(sub, KOL)
+      sub.getCell(12).alignment = { horizontal: 'center' }
+      if (g.rows.reduce((a, r) => a + r.selisih, 0) < 0) tandaiKurang(sub, KOL, { kolomTeks: [11, 12] })
+      subtotalGol.push(sub.number)
     }
 
     const barisTerakhir = ws.rowCount
     const n = barisTerakhir + 1
-    const adaData = barisTerakhir >= barisPertama
-    const jum = (kol) => adaData ? `SUM(${kol}${barisPertama}:${kol}${barisTerakhir})` : '0'
+    const adaData = subtotalGol.length > 0
+    // TOTAL menjumlahkan baris SUBTOTAL, bukan seluruh rentang — kalau seluruh
+    // rentang dijumlahkan, baris subtotal ikut terhitung dan angkanya dobel.
+    const jum = (kol) => adaData ? subtotalGol.map(b => `${kol}${b}`).join('+') : '0'
 
     const total = ws.addRow([
       'TOTAL', s.namaSkpd,
@@ -519,7 +669,8 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       { bold: false, size: 10, color: 'FF667085' })
     judul(ws,
       'Kolom Selisih di sini memakai total kabupaten, sehingga dinas yang lebih bisa menutupi dinas yang kurang. ' +
-      'Dua kolom terakhir menghitung kekurangan per dinas tanpa saling menutup — itulah yang menandai rekening rawan.',
+      'Dua kolom terakhir menghitung kekurangan per dinas tanpa saling menutup — itulah yang menandai rekening rawan. ' +
+      'Rekening dipisah per golongan pegawai: blok PNS di atas, PPPK di bawah, masing-masing ditutup baris SUBTOTAL.',
       KOL, { bold: false, size: 9, color: 'FF98A2B3' })
     judul(ws,
       'Perhatikan kolom "Dibayar (kali)": gaji pokok dan tunjangan ikut terbayar di bulan THR dan gaji ke-13 sehingga ' +
@@ -537,32 +688,60 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     KOLOM.forEach((k, i) => { ws.getColumn(i + 1).width = k.width })
 
     const barisPertama = header.number + 1
-    for (const r of data.rekening || []) {
-      const n = ws.rowCount + 1
-      const row = ws.addRow([
-        r.kodeRekening, r.namaRekening, r.pagu, r.sp2d, r.dibayar,
-        { formula: `C${n}-D${n}` },
-        { formula: `IFERROR(D${n}/E${n},0)` },
-        { formula: `G${n}*${REF_SISA}` },
-        { formula: `F${n}-H${n}` },
-        { formula: `IF(I${n}<0,"KURANG","CUKUP")` },
-        r.dinasKurang || null,
-        r.dinasKurang ? r.kekurangan : null,
+    const subtotalGol = []
+    for (const g of kelompokkanGolongan(data.rekening, petaGol)) {
+      barisBandGolongan(ws, g, KOL)
+      const golAwal = ws.rowCount + 1
+      for (const r of g.rows) {
+        const n = ws.rowCount + 1
+        const row = ws.addRow([
+          r.kodeRekening, r.namaRekening, r.pagu, r.sp2d, r.dibayar,
+          { formula: `C${n}-D${n}` },
+          { formula: `IFERROR(D${n}/E${n},0)` },
+          { formula: `G${n}*${REF_SISA}` },
+          { formula: `F${n}-H${n}` },
+          { formula: `IF(I${n}<0,"KURANG","CUKUP")` },
+          r.dinasKurang || null,
+          r.dinasKurang ? r.kekurangan : null,
+        ])
+        row.font = { size: 10 }
+        for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
+        row.getCell(1).font = { size: 10, name: 'Consolas' }
+        row.getCell(5).alignment = { horizontal: 'center' }
+        row.getCell(10).alignment = { horizontal: 'center' }
+        row.getCell(11).alignment = { horizontal: 'center' }
+        // Rekening ditandai kalau ada dinas yang kurang, walau total kabupatennya cukup.
+        if (r.selisih < 0 || r.dinasKurang) tandaiKurang(row, KOL, { kolomTeks: [11, 12] })
+      }
+
+      const golAkhir = ws.rowCount
+      const ns = golAkhir + 1
+      const jumGol = (kol) => `SUM(${kol}${golAwal}:${kol}${golAkhir})`
+      const sub = ws.addRow([
+        'SUBTOTAL', g.label,
+        { formula: jumGol('C') },
+        { formula: jumGol('D') },
+        null, // laju bayar tiap rekening berbeda — tidak ada artinya dijumlahkan
+        { formula: jumGol('F') },
+        { formula: jumGol('G') },
+        { formula: jumGol('H') },
+        { formula: `F${ns}-H${ns}` },
+        { formula: `IF(I${ns}<0,"KURANG","CUKUP")` },
+        null,
+        { formula: jumGol('L') },
       ])
-      row.font = { size: 10 }
-      for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
-      row.getCell(1).font = { size: 10, name: 'Consolas' }
-      row.getCell(5).alignment = { horizontal: 'center' }
-      row.getCell(10).alignment = { horizontal: 'center' }
-      row.getCell(11).alignment = { horizontal: 'center' }
-      // Rekening ditandai kalau ada dinas yang kurang, walau total kabupatennya cukup.
-      if (r.selisih < 0 || r.dinasKurang) tandaiKurang(row, KOL, { kolomTeks: [11, 12] })
+      styleSubtotal(sub, KOL)
+      sub.getCell(2).alignment = { horizontal: 'left' }
+      sub.getCell(10).alignment = { horizontal: 'center' }
+      subtotalGol.push(sub.number)
     }
 
     const barisTerakhir = ws.rowCount
-    if (barisTerakhir >= barisPertama) {
+    if (subtotalGol.length) {
       const n = barisTerakhir + 1
-      const jum = (kol) => `SUM(${kol}${barisPertama}:${kol}${barisTerakhir})`
+      // Yang dijumlahkan baris SUBTOTAL-nya, bukan seluruh rentang — kalau
+      // seluruh rentang, baris subtotal ikut terhitung dan angkanya dobel.
+      const jum = (kol) => subtotalGol.map(b => `${kol}${b}`).join('+')
       const total = ws.addRow([
         'TOTAL', null,
         { formula: jum('C') },

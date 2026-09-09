@@ -165,6 +165,12 @@ export function hitungProyeksiAkhir(data, { persen } = {}) {
       realisasiTerakhir: bulat(s.realisasiTerakhir),
       sp2dTerakhir: num(s.sp2dTerakhir),
       perBulanRutin: bulat(s.perBulanRutin),
+      // Dua kandidat "nilai sekali bayar" dibawa apa adanya: layar memakainya
+      // untuk memperlihatkan selisih antara basis rata-rata dan basis tertinggi,
+      // dan tren >1 dipakai memperingatkan dinas yang gajinya sedang naik.
+      rataRata: bulat(s.rataRata),
+      tertinggi: bulat(s.tertinggi),
+      tren: num(s.tren),
       bulanGajiTerbayar: num(s.bulanGajiTerbayar),
       medianBulan: bulat(s.medianBulan),
       // Nilai bulan terakhir dibanding satu bulan rutin (median). Di atas ~1,4
