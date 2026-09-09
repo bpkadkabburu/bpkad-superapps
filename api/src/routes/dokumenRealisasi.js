@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { syncDokumenRealisasi } from './sync.js'
-import { klausaAwalanRekening } from '../utils/kodeRekening.js'
+import { klausaAwalanRekening, normalKodeRekening } from '../utils/kodeRekening.js'
 
 const router = new Hono()
 router.use('*', requireAuth)
@@ -22,9 +22,15 @@ function escapeLike(raw) {
   return String(raw).replace(/[\\%_]/g, m => '\\' + m)
 }
 
+// Batas tanggal hanya diterima dalam bentuk YYYY-MM-DD; selain itu diabaikan.
+function tanggalIso(raw) {
+  const s = String(raw || '').trim()
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null
+}
+
 // Filter yang dipakai bareng oleh daftar dokumen dan matriks kelengkapan.
 // abaikanBulan: matriks memakai bulan sebagai kolom, jadi filter bulan tidak
-// boleh ikut memotong datanya.
+// boleh ikut memotong datanya. Batas tanggal tetap ikut — justru itu gunanya.
 function bangunFilter(c, { abaikanBulan = false } = {}) {
   const klausa = []
   const params = []
@@ -33,6 +39,21 @@ function bangunFilter(c, { abaikanBulan = false } = {}) {
   if (!abaikanBulan && bulan >= 1 && bulan <= 12) {
     klausa.push('dr.bulan = ?')
     params.push(bulan)
+  }
+
+  // Batas tanggal dokumen — dipakai untuk memotong di tengah bulan berjalan
+  // ("realisasi s.d. tanggal sekian"), jadi tetap berlaku walau bulan diabaikan.
+  // Perbandingannya pada rentang waktu, bukan DATE(), supaya jam pada
+  // tanggal_dokumen (kalau ada) tidak ikut memotong hari terakhir.
+  const tanggalDari = tanggalIso(c.req.query('tanggalDari'))
+  if (tanggalDari) {
+    klausa.push('dr.tanggal_dokumen >= ?')
+    params.push(`${tanggalDari} 00:00:00`)
+  }
+  const tanggalSampai = tanggalIso(c.req.query('tanggalSampai'))
+  if (tanggalSampai) {
+    klausa.push('dr.tanggal_dokumen < ? + INTERVAL 1 DAY')
+    params.push(`${tanggalSampai} 00:00:00`)
   }
 
   const kodeSkpd = c.req.query('kodeSkpd')
@@ -72,6 +93,25 @@ function bangunFilter(c, { abaikanBulan = false } = {}) {
   return { sql: klausa.length ? ' AND ' + klausa.join(' AND ') : '', params }
 }
 
+// Urutan hanya boleh dari daftar ini — nama kolomnya masuk langsung ke SQL.
+const KOLOM_URUT = {
+  nilai_realisasi: 'dr.nilai_realisasi',
+  nilai_sp2d: 'dr.nilai_sp2d',
+  tanggal_dokumen: 'dr.tanggal_dokumen',
+  bulan: 'dr.bulan',
+  kode_rekening: 'dr.kode_rekening',
+  nomor_dokumen: 'dr.nomor_dokumen',
+}
+const URUT_BAWAAN = 'dr.bulan, dr.kode_skpd, dr.tanggal_dokumen, dr.id'
+
+function klausaUrut(c) {
+  const kolom = KOLOM_URUT[String(c.req.query('sortBy') || '')]
+  if (!kolom) return URUT_BAWAAN
+  const arah = String(c.req.query('sortDir') || '').toLowerCase() === 'asc' ? 'ASC' : 'DESC'
+  // dr.id sebagai pemecah seri, supaya paginasi tidak mengacak baris bernilai sama.
+  return `${kolom} ${arah}, dr.id`
+}
+
 async function idTahun(tahun) {
   if (!tahun) return null
   const [rows] = await db.query('SELECT id FROM tahun_anggaran WHERE tahun = ?', [tahun])
@@ -102,7 +142,7 @@ router.get('/', async (c) => {
     `SELECT dr.*
      FROM dokumen_realisasi dr
      WHERE dr.tahun_id = ?${f.sql}
-     ORDER BY dr.bulan, dr.kode_skpd, dr.tanggal_dokumen, dr.id
+     ORDER BY ${klausaUrut(c)}
      LIMIT ? OFFSET ?`,
     [tahun_id, ...f.params, pageSize, (page - 1) * pageSize]
   )
@@ -145,7 +185,9 @@ router.get('/opsi', async (c) => {
     [tahun_id]
   )
   const [bulan] = await db.query(
-    `SELECT bulan, COUNT(*) AS jumlah
+    `SELECT bulan, COUNT(*) AS jumlah,
+       DATE_FORMAT(MIN(tanggal_dokumen), '%Y-%m-%d') AS tanggal_min,
+       DATE_FORMAT(MAX(tanggal_dokumen), '%Y-%m-%d') AS tanggal_max
      FROM dokumen_realisasi WHERE tahun_id = ? AND bulan IS NOT NULL
      GROUP BY bulan ORDER BY bulan`,
     [tahun_id]
@@ -155,8 +197,107 @@ router.get('/opsi', async (c) => {
     skpd: skpd.map(r => ({ ...r, jumlah: Number(r.jumlah) })),
     rekening: rekening.map(r => ({ ...r, jumlah: Number(r.jumlah) })),
     jenisDokumen: jenis.map(r => ({ ...r, jumlah: Number(r.jumlah) })),
-    bulan: bulan.map(r => ({ bulan: Number(r.bulan), jumlah: Number(r.jumlah) })),
+    // tanggalMin/Max per bulan: satu bulan import bisa memuat dokumen bertanggal
+    // akhir bulan sebelumnya, jadi rentangnya tidak boleh ditebak dari nomor bulan.
+    bulan: bulan.map(r => ({
+      bulan: Number(r.bulan),
+      jumlah: Number(r.jumlah),
+      tanggalMin: r.tanggal_min,
+      tanggalMax: r.tanggal_max,
+    })),
   })
+})
+
+// Rekap per kode rekening untuk filter yang sedang aktif (termasuk batas bulan
+// dan tanggal). Pagu diambil dari anggaran_rekap dan selalu setahun penuh —
+// disandingkan supaya kelihatan rekening mana yang serapannya jomplang.
+router.get('/rekap-rekening', async (c) => {
+  const tahun_id = await idTahun(c.req.query('tahun'))
+  if (!tahun_id) return c.json({ data: [], ringkasan: null })
+
+  const f = bangunFilter(c)
+  const [selRows] = await db.query(
+    `SELECT dr.kode_rekening AS kode, MAX(dr.nama_rekening) AS nama,
+       COUNT(*) AS dokumen,
+       COUNT(DISTINCT dr.kode_skpd) AS skpd,
+       COALESCE(SUM(dr.nilai_realisasi), 0) AS nilai,
+       COALESCE(SUM(CASE WHEN ${SP2D_ADA} THEN dr.nilai_realisasi ELSE 0 END), 0) AS nilai_sp2d,
+       COALESCE(SUM(CASE WHEN ${SP2D_ADA} THEN 1 ELSE 0 END), 0) AS dokumen_sp2d
+     FROM dokumen_realisasi dr
+     WHERE dr.tahun_id = ?${f.sql}
+     GROUP BY dr.kode_rekening`,
+    [tahun_id, ...f.params]
+  )
+
+  // Pagu hanya ikut disaring oleh hal yang memang punya arti di sisi anggaran.
+  const paguKlausa = []
+  const paguParams = [tahun_id]
+  const kodeRekening = bersihkanKode(c.req.query('kodeRekening'))
+  if (kodeRekening) {
+    const awalan = klausaAwalanRekening('kode_rekening', kodeRekening)
+    paguKlausa.push(awalan.sql)
+    paguParams.push(...awalan.params)
+  }
+  const kodeSkpd = c.req.query('kodeSkpd')
+  if (kodeSkpd) { paguKlausa.push('kode_skpd = ?'); paguParams.push(kodeSkpd) }
+
+  const [paguRows] = await db.query(
+    `SELECT kode_rekening AS kode, MAX(nama_rekening) AS nama, SUM(pagu) AS pagu
+     FROM anggaran_rekap
+     WHERE tahun_id = ?${paguKlausa.length ? ' AND ' + paguKlausa.join(' AND ') : ''}
+     GROUP BY kode_rekening`,
+    paguParams
+  )
+
+  // Digabung lewat kode yang dinormalkan, karena lebar digit anggaran dan
+  // realisasi bisa berbeda pada tahun peralihan format.
+  const baris = new Map()
+  function ambil(kode, nama) {
+    const kunci = normalKodeRekening(kode)
+    let b = baris.get(kunci)
+    if (!b) {
+      b = {
+        kode, nama: nama || kode, pagu: 0, dokumen: 0, skpd: 0,
+        nilai: 0, nilaiSp2d: 0, dokumenSp2d: 0,
+      }
+      baris.set(kunci, b)
+    } else if ((!b.nama || b.nama === b.kode) && nama) {
+      b.nama = nama
+    }
+    return b
+  }
+
+  for (const r of paguRows) {
+    if (!r.kode) continue
+    ambil(r.kode, r.nama).pagu = Number(r.pagu) || 0
+  }
+  for (const r of selRows) {
+    if (!r.kode) continue
+    const b = ambil(r.kode, r.nama)
+    // Kode dari dokumen yang menang, supaya yang tampil sesuai data realisasi.
+    b.kode = r.kode
+    if (r.nama) b.nama = r.nama
+    b.dokumen = Number(r.dokumen) || 0
+    b.skpd = Number(r.skpd) || 0
+    b.nilai = Number(r.nilai) || 0
+    b.nilaiSp2d = Number(r.nilai_sp2d) || 0
+    b.dokumenSp2d = Number(r.dokumen_sp2d) || 0
+  }
+
+  const data = Array.from(baris.values())
+    .map(b => ({ ...b, sisa: b.pagu - b.nilai, persen: b.pagu > 0 ? (b.nilai / b.pagu) * 100 : null }))
+    .sort((a, b) => b.nilai - a.nilai || String(a.kode).localeCompare(String(b.kode), 'id', { numeric: true }))
+
+  const ringkasan = data.reduce((a, r) => ({
+    rekening: a.rekening + 1,
+    rekeningAdaRealisasi: a.rekeningAdaRealisasi + (r.dokumen > 0 ? 1 : 0),
+    dokumen: a.dokumen + r.dokumen,
+    nilai: a.nilai + r.nilai,
+    nilaiSp2d: a.nilaiSp2d + r.nilaiSp2d,
+    pagu: a.pagu + r.pagu,
+  }), { rekening: 0, rekeningAdaRealisasi: 0, dokumen: 0, nilai: 0, nilaiSp2d: 0, pagu: 0 })
+
+  return c.json({ data, ringkasan })
 })
 
 // Matriks kelengkapan SKPD x bulan: menjawab "dokumen dinas ini, bulan ini,

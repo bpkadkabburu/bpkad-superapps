@@ -14,6 +14,7 @@ import sumberDanaRoutes from './routes/sumberDana.js'
 import rekapRealisasiRoutes from './routes/rekapRealisasi.js'
 import rekapPerUrusanRoutes from './routes/rekapPerUrusan.js'
 import rekapPerProgramRoutes from './routes/rekapPerProgram.js'
+import rekapPerSumberDanaRoutes from './routes/rekapPerSumberDana.js'
 import perbupApbdRoutes from './routes/perbupApbd.js'
 import efisiensiRoutes from './routes/efisiensi.js'
 import proyeksiGajiRoutes from './routes/proyeksiGaji.js'
@@ -43,6 +44,7 @@ app.route('/api/sumber-data/dokumen-aklap', dokumenAklapRoutes)
 app.route('/api/rekap-realisasi', rekapRealisasiRoutes)
 app.route('/api/rekap-per-urusan', rekapPerUrusanRoutes)
 app.route('/api/rekap-per-program', rekapPerProgramRoutes)
+app.route('/api/rekap-per-sumber-dana', rekapPerSumberDanaRoutes)
 app.route('/api/perbup-apbd', perbupApbdRoutes)
 app.route('/api/efisiensi', efisiensiRoutes)
 app.route('/api/proyeksi-gaji', proyeksiGajiRoutes)

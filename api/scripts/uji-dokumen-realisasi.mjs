@@ -136,6 +136,101 @@ for (const s of kurang.slice(0, 10)) {
 const tanpaPagu = kelRek.skpd.filter(s => s.pagu === 0 && s.dokumen > 0)
 console.log(`  ada dokumen tanpa pagu: ${tanpaPagu.length}${tanpaPagu.length ? ' → ' + tanpaPagu.map(s => s.namaSkpd).slice(0, 3).join('; ') : ''}`)
 
+console.log('\nUrutan daftar dokumen')
+const urutTurun = await ambil('', { sortBy: 'nilai_realisasi', sortDir: 'desc', pageSize: 200 })
+const nilaiTurun = urutTurun.data.map(r => Number(r.nilai_realisasi) || 0)
+cek('urut nilai realisasi menurun', nilaiTurun.every((v, i) => i === 0 || nilaiTurun[i - 1] >= v),
+  `tertinggi Rp${rp(nilaiTurun[0])}`)
+const urutNaik = await ambil('', { sortBy: 'nilai_realisasi', sortDir: 'asc', pageSize: 200 })
+const nilaiNaik = urutNaik.data.map(r => Number(r.nilai_realisasi) || 0)
+cek('urut nilai realisasi menaik', nilaiNaik.every((v, i) => i === 0 || nilaiNaik[i - 1] <= v),
+  `terendah Rp${rp(nilaiNaik[0])}`)
+cek('mengurutkan tidak mengubah jumlah', urutTurun.total === semua.total && urutNaik.total === semua.total)
+const urutTanggal = await ambil('', { sortBy: 'tanggal_dokumen', sortDir: 'desc', pageSize: 50 })
+const tgl = urutTanggal.data.map(r => String(r.tanggal_dokumen))
+cek('urut tanggal dokumen menurun', tgl.every((v, i) => i === 0 || tgl[i - 1] >= v), tgl[0])
+const urutNgawur = await ambil('', { sortBy: 'nilai_realisasi; DROP TABLE x', sortDir: 'desc', pageSize: 10 })
+cek('kolom urut di luar daftar putih diabaikan',
+  urutNgawur.data[0]?.id === hal1.data[0]?.id, 'kembali ke urutan bawaan')
+
+console.log('\nBatas tanggal')
+const bulanTgl = opsi.bulan.find(b => b.tanggalMin && b.tanggalMax && b.tanggalMin !== b.tanggalMax) || opsi.bulan[0]
+cek('opsi bulan membawa rentang tanggal', !!bulanTgl.tanggalMin && !!bulanTgl.tanggalMax,
+  `bulan ${bulanTgl.bulan}: ${bulanTgl.tanggalMin} s/d ${bulanTgl.tanggalMax}`)
+
+const bulanPenuh = await ambil('', { bulan: bulanTgl.bulan })
+const rentangPenuh = await ambil('', {
+  bulan: bulanTgl.bulan, tanggalDari: bulanTgl.tanggalMin, tanggalSampai: bulanTgl.tanggalMax,
+})
+cek('rentang penuh = seluruh dokumen bulan itu', rentangPenuh.total === bulanPenuh.total,
+  `${rentangPenuh.total} = ${bulanPenuh.total}`)
+
+const sampaiHariPertama = await ambil('', { bulan: bulanTgl.bulan, tanggalSampai: bulanTgl.tanggalMin })
+cek('batas s/d memotong dokumen', sampaiHariPertama.total < bulanPenuh.total,
+  `s/d ${bulanTgl.tanggalMin}: ${sampaiHariPertama.total} dari ${bulanPenuh.total}`)
+cek('semua dokumen di dalam batas s/d',
+  sampaiHariPertama.data.every(r => String(r.tanggal_dokumen).slice(0, 10) <= bulanTgl.tanggalMin))
+// Hari terakhir harus ikut terhitung walau tanggal_dokumen menyimpan jam.
+const hanyaHariAkhir = await ambil('', {
+  bulan: bulanTgl.bulan, tanggalDari: bulanTgl.tanggalMax, tanggalSampai: bulanTgl.tanggalMax,
+})
+cek('batas dari = sampai tetap memuat hari itu', hanyaHariAkhir.total > 0,
+  `${bulanTgl.tanggalMax}: ${hanyaHariAkhir.total} dokumen`)
+cek('potongan + sisanya = bulan penuh',
+  sampaiHariPertama.total + (await ambil('', {
+    bulan: bulanTgl.bulan,
+    tanggalDari: new Date(new Date(bulanTgl.tanggalMin + 'T00:00:00Z').getTime() + 86400000)
+      .toISOString().slice(0, 10),
+  })).total === bulanPenuh.total)
+const tglNgawur = await ambil('', { bulan: bulanTgl.bulan, tanggalSampai: "2026-01-01' OR '1'='1" })
+cek('tanggal yang tidak berformat diabaikan', tglNgawur.total === bulanPenuh.total)
+
+const kelTgl = await ambil('/kelengkapan', { tanggalSampai: bulanTgl.tanggalMin })
+cek('matriks ikut batas tanggal',
+  kelTgl.skpd.reduce((a, s) => a + s.dokumen, 0) < kel.skpd.reduce((a, s) => a + s.dokumen, 0))
+
+console.log('\nRekap per rekening')
+const rekap = await ambil('/rekap-rekening')
+const jumlahNilai = rekap.data.reduce((a, r) => a + r.nilai, 0)
+const jumlahDok = rekap.data.reduce((a, r) => a + r.dokumen, 0)
+cek('total nilai rekap = ringkasan daftar', Math.round(jumlahNilai) === Math.round(semua.ringkasan.nilai),
+  `Rp${rp(jumlahNilai)}`)
+cek('total dokumen rekap = total daftar', jumlahDok === semua.total, `${jumlahDok} dokumen`)
+cek('urut bawaan nilai terbesar dulu',
+  rekap.data.every((r, i) => i === 0 || rekap.data[i - 1].nilai >= r.nilai),
+  `${rekap.data.length} rekening`)
+cek('rekening tanpa realisasi ikut dibawa (berpagu)',
+  rekap.data.some(r => r.dokumen === 0 && r.pagu > 0) || rekap.data.every(r => r.dokumen > 0),
+  `${rekap.data.filter(r => r.dokumen === 0).length} rekening belum ada realisasi`)
+cek('kode rekening tidak berulang',
+  new Set(rekap.data.map(r => r.kode)).size === rekap.data.length)
+cek('nilai SP2D tidak melebihi nilai realisasi',
+  rekap.data.every(r => r.nilaiSp2d <= r.nilai + 0.01))
+cek('ringkasan rekap konsisten dengan barisnya',
+  rekap.ringkasan.rekening === rekap.data.length &&
+  Math.round(rekap.ringkasan.nilai) === Math.round(jumlahNilai))
+
+const rekapBulan = await ambil('/rekap-rekening', { bulan: bulanTgl.bulan })
+cek('rekap ikut filter bulan',
+  Math.round(rekapBulan.data.reduce((a, r) => a + r.nilai, 0)) === Math.round(bulanPenuh.ringkasan.nilai),
+  `bulan ${bulanTgl.bulan}: Rp${rp(rekapBulan.ringkasan.nilai)}`)
+const rekapPotong = await ambil('/rekap-rekening', { bulan: bulanTgl.bulan, tanggalSampai: bulanTgl.tanggalMin })
+cek('rekap ikut batas tanggal',
+  Math.round(rekapPotong.data.reduce((a, r) => a + r.nilai, 0)) === Math.round(sampaiHariPertama.ringkasan.nilai),
+  `s/d ${bulanTgl.tanggalMin}: Rp${rp(rekapPotong.ringkasan.nilai)}`)
+const rekapSatu = await ambil('/rekap-rekening', { kodeRekening: '5.1.01.01' })
+cek('rekap ikut filter rekening',
+  rekapSatu.data.every(r => String(r.kode).startsWith('5.1.01.01')) &&
+  Math.round(rekapSatu.data.reduce((a, r) => a + r.nilai, 0)) === Math.round(perRek.ringkasan.nilai),
+  `${rekapSatu.data.length} rekening`)
+
+console.log(`\n10 rekening realisasi terbesar (${TAHUN})`)
+for (const r of rekap.data.filter(x => x.dokumen > 0).slice(0, 10)) {
+  const persen = r.persen == null ? '   —  ' : `${r.persen.toFixed(1).padStart(5)}%`
+  console.log(`  ${String(r.kode).padEnd(21)} ${String(r.nama).slice(0, 40).padEnd(42)} ` +
+    `Rp${rp(r.nilai).padStart(16)}  ${persen}  ${String(r.dokumen).padStart(5)} dok`)
+}
+
 console.log(`\n${gagal === 0 ? 'SEMUA PENGUJIAN LULUS' : `${gagal} PENGUJIAN GAGAL`}\n`)
 await db.end()
 process.exit(gagal === 0 ? 0 : 1)

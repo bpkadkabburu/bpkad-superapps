@@ -24,6 +24,7 @@ const showSumberDana = computed(() =>
 watch(() => props.defaultExpanded, (val) => { expanded.value = val })
 
 const BADGE_TYPE = {
+  'Sumber Dana': 'primary',
   SKPD: 'primary',
   'Unit SKPD': 'success',
   Urusan: 'warning',
@@ -37,6 +38,10 @@ const BADGE_TYPE = {
 function formatRp(val) {
   return 'Rp' + Number(val || 0).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
+
+// Bagian realisasi SPP yang didapat dari pembagian proporsional (rekap per
+// sumber dana). Rekap lain tidak mengirim field ini, jadi nilainya 0.
+const estimasiSpp = computed(() => Number(props.node.estimasi?.realisasiSpp) || 0)
 
 function persenSpp(node) {
   if (!node.totals.pagu) return 0
@@ -72,9 +77,21 @@ function persenSpp(node) {
           <el-tag v-if="node.bidang" type="success" size="small" effect="plain">Bidang: {{ node.bidang }}</el-tag>
         </div>
         <!-- Baris 2: badge belum SP2D (di bawah, tidak tumpang tindih) -->
-        <div v-if="(node.belumSp2d || 0) > 0" style="margin-top: 6px;">
-          <el-tag type="danger" size="small" effect="plain" style="font-family: monospace;">
+        <div v-if="(node.belumSp2d || 0) > 0 || estimasiSpp > 0" style="margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap;">
+          <el-tag v-if="(node.belumSp2d || 0) > 0" type="danger" size="small" effect="plain" style="font-family: monospace;">
             Belum SP2D: {{ formatRp(node.belumSp2d) }}
+          </el-tag>
+          <!-- Hanya muncul di rekap per sumber dana: bagian realisasi yang dibagi
+               proporsional karena satu baris anggaran dipakai beberapa sumber dana. -->
+          <el-tag
+            v-if="estimasiSpp > 0"
+            type="warning"
+            size="small"
+            effect="plain"
+            style="font-family: monospace;"
+            :title="`Realisasi baris ini sebagian dibagi proporsional menurut pagu tiap sumber dana, karena dokumen realisasi SIPD tidak menyimpan sumber dana. SPP ${formatRp(estimasiSpp)} · SP2D ${formatRp(node.estimasi.realisasiSp2d)}`"
+          >
+            Estimasi pembagian: {{ formatRp(estimasiSpp) }}
           </el-tag>
         </div>
       </div>

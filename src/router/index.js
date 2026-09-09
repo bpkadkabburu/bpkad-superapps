@@ -109,6 +109,12 @@ const routes = [
             meta: { requiresSkpdSync: true }
           },
           {
+            path: 'rekap-per-sumber-dana',
+            name: 'RekapPerSumberDana',
+            component: () => import('../views/RekapPerSumberDanaView.vue'),
+            meta: { requiresSkpdSync: true }
+          },
+          {
             path: 'rekap-anggaran',
             name: 'RekapAnggaran',
             component: () => import('../views/RekapAnggaranView.vue'),

@@ -157,6 +157,10 @@ function goHome() {
                 <el-icon><Document /></el-icon>
                 <span>Per Program</span>
               </el-menu-item>
+              <el-menu-item :index="`/tahun/${tahun}/rekap-per-sumber-dana`">
+                <el-icon><Document /></el-icon>
+                <span>Per Sumber Dana</span>
+              </el-menu-item>
             </el-sub-menu>
 
             <el-menu-item :index="`/tahun/${tahun}/rekap-anggaran`">
