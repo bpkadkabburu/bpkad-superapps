@@ -47,26 +47,34 @@ function urutGolonganLaluKode(a, b) {
     String(a.kodeRekening).localeCompare(String(b.kodeRekening), 'id', { numeric: true })
 }
 
+function golonganKosong(kunci, labelPeta) {
+  return {
+    kunci, label: labelPeta.get(kunci) || kunci,
+    jumlahRekening: 0, pagu: 0, sp2d: 0, realisasiTerakhir: 0, perBulanRutin: 0,
+    rataRata: 0, kebutuhan: 0, alokasi: 0, tambah: 0, kurangi: 0,
+  }
+}
+
 // Subtotal per golongan. Daftar rekeningnya sendiri tidak ikut disalin ke sini —
 // pemakainya menyaring dari array rekening yang sudah urut per golongan, supaya
 // payload tidak memuat data yang sama dua kali.
-function kelompokGolongan(rekening, labelPeta) {
+//
+// `canonicalGol` (opsional) = daftar seluruh golongan yang ada di data secara
+// keseluruhan. Kalau diisi, entri golongan yang tidak dimiliki dinas ini (mis.
+// dinas tanpa PPPK) tetap dikembalikan dengan angka nol — bukan hilang — supaya
+// sheet Excel bisa selalu menampilkan blok PNS dan PPPK secara seragam.
+function kelompokGolongan(rekening, labelPeta, canonicalGol) {
   const map = new Map()
+  for (const kunci of canonicalGol || []) map.set(kunci, golonganKosong(kunci, labelPeta))
   for (const r of rekening) {
     let g = map.get(r.golongan)
-    if (!g) {
-      g = {
-        kunci: r.golongan, label: labelPeta.get(r.golongan) || r.golongan,
-        jumlahRekening: 0, pagu: 0, sp2d: 0, realisasiTerakhir: 0, perBulanRutin: 0,
-        kebutuhan: 0, alokasi: 0, tambah: 0, kurangi: 0,
-      }
-      map.set(r.golongan, g)
-    }
+    if (!g) { g = golonganKosong(r.golongan, labelPeta); map.set(r.golongan, g) }
     g.jumlahRekening += 1
     g.pagu += r.pagu
     g.sp2d += r.sp2d
     g.realisasiTerakhir += r.realisasiTerakhir
     g.perBulanRutin += r.perBulanRutin
+    g.rataRata += r.rataRata
     g.kebutuhan += r.kebutuhan
     g.alokasi += r.alokasi
     if (r.pergeseran > 0) g.tambah += r.pergeseran
@@ -75,6 +83,8 @@ function kelompokGolongan(rekening, labelPeta) {
   for (const g of map.values()) {
     g.pergeseran = g.alokasi - g.pagu
     g.cadanganAkhir = g.alokasi - g.kebutuhan
+    // Laju bayar golongan ini di dinas terkait — dasar kolom "Dibayar (kali)".
+    g.dibayar = g.rataRata > 0 ? Math.round((g.sp2d / g.rataRata) * 100) / 100 : 0
   }
   return [...map.values()].sort((a, b) => String(a.kunci).localeCompare(String(b.kunci)))
 }
@@ -149,6 +159,13 @@ export function hitungProyeksiAkhir(data, { persen } = {}) {
   const persenCadangan = Number.isFinite(p) && p >= 0 ? p : DEFAULT_PERSEN_CADANGAN
   const rate = persenCadangan / 100
   const labelPeta = petaLabelGolongan(data.skpd || [])
+  // Seluruh golongan yang muncul di data manapun — dipakai supaya tiap dinas
+  // selalu punya entri PNS *dan* PPPK (nol kalau memang tidak ada), bukan cuma
+  // golongan yang kebetulan dipunyai dinas itu. Dihitung dari kode rekening
+  // (sama seperti bagiKeRekening di bawah), bukan dari field `golongan` di
+  // payload masuk — field itu opsional/tidak dipakai di sini.
+  const canonicalGol = [...new Set((data.skpd || []).flatMap(s => (s.rekening || []).map(r => subRincianRekening(r.kodeRekening) || '-')))]
+    .sort((a, b) => String(a).localeCompare(String(b)))
 
   const baris = (data.skpd || []).map(s => {
     const kebutuhan = bulat(num(s.sp2d) + num(s.proyeksi))
@@ -227,7 +244,7 @@ export function hitungProyeksiAkhir(data, { persen } = {}) {
     b.cadanganAkhir = b.alokasi - b.kebutuhan
     b.persenAkhir = b.kebutuhan > 0 ? (b.cadanganAkhir / b.kebutuhan) * 100 : 0
     b.rekening = bagiKeRekening(b)
-    b.golongan = kelompokGolongan(b.rekening, labelPeta)
+    b.golongan = kelompokGolongan(b.rekening, labelPeta, canonicalGol)
     b.rekeningTambah = b.rekening.filter(r => r.pergeseran > 0).length
     b.rekeningTanpaRealisasi = b.rekening.filter(r => r.tanpaRealisasi).length
     delete b._rekening
@@ -311,6 +328,6 @@ export function hitungProyeksiAkhir(data, { persen } = {}) {
     skpd: baris,
     rekening,
     // Rekap PNS vs PPPK (atau golongan apa pun yang ada di awalan yang dipakai).
-    golongan: kelompokGolongan(rekening, labelPeta),
+    golongan: kelompokGolongan(rekening, labelPeta, canonicalGol),
   }
 }

@@ -54,21 +54,28 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
   // kena untuk data 2024–2025 yang formatnya 5.1.01.01.01.
   const awalan = klausaAwalanRekening('kode_rekening', prefix)
 
+  // Kunci "satu sheet" dipatok di level Unit SKPD (kode_sub_unit / kode_sub_skpd),
+  // sama seperti rekapRealisasi.js dkk — bukan kode_skpd. Untuk hampir semua dinas
+  // nilainya sama dengan kode_skpd sendiri (tidak ada sub unit lain yang punya baris
+  // gaji), tapi RSUD Namlea tercatat sebagai sub unit di bawah Dinas Kesehatan dengan
+  // pembagian gaji yang benar-benar terpisah, jadi harus pecah jadi sheet sendiri —
+  // bukan melebur ke Dinas Kesehatan seperti Puskesmas (yang memang tidak punya baris
+  // gaji sendiri sehingga tidak pernah muncul di sini).
   const [paguRows] = await db.query(
-    `SELECT kode_skpd, nama_skpd, kode_rekening, nama_rekening, SUM(pagu) AS pagu
+    `SELECT kode_sub_unit AS kode_skpd, nama_sub_unit AS nama_skpd, kode_rekening, nama_rekening, SUM(pagu) AS pagu
      FROM anggaran_rekap
      WHERE tahun_id = ? AND ${awalan.sql}
-     GROUP BY kode_skpd, nama_skpd, kode_rekening, nama_rekening`,
+     GROUP BY kode_sub_unit, nama_sub_unit, kode_rekening, nama_rekening`,
     [tahun_id, ...awalan.params]
   )
 
   const [realisasiRows] = await db.query(
-    `SELECT kode_skpd, nama_skpd, kode_rekening, nama_rekening,
+    `SELECT kode_sub_skpd AS kode_skpd, nama_sub_skpd AS nama_skpd, kode_rekening, nama_rekening,
        SUM(nilai_realisasi) AS spp,
        SUM(CASE WHEN ${SP2D_SAH} THEN nilai_realisasi ELSE 0 END) AS sp2d
      FROM dokumen_realisasi
      WHERE tahun_id = ? AND ${awalan.sql}
-     GROUP BY kode_skpd, nama_skpd, kode_rekening, nama_rekening`,
+     GROUP BY kode_sub_skpd, nama_sub_skpd, kode_rekening, nama_rekening`,
     [tahun_id, ...awalan.params]
   )
 
@@ -76,28 +83,28 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
   // dari satu SP2D (gaji induk + rapel/susulan), dan kalau itu tidak kelihatan,
   // nilai bulan terakhir gampang disalahartikan sebagai "gaji satu bulan".
   const [bulanRows] = await db.query(
-    `SELECT kode_skpd, bulan,
+    `SELECT kode_sub_skpd AS kode_skpd, bulan,
        SUM(CASE WHEN ${SP2D_SAH} THEN nilai_realisasi ELSE 0 END) AS sp2d,
        COUNT(DISTINCT CASE WHEN ${SP2D_SAH} THEN nomor_sp2d END) AS jumlah_sp2d
      FROM dokumen_realisasi
      WHERE tahun_id = ? AND ${awalan.sql} AND bulan IS NOT NULL
-     GROUP BY kode_skpd, bulan`,
+     GROUP BY kode_sub_skpd, bulan`,
     [tahun_id, ...awalan.params]
   )
 
   // Realisasi per bulan sampai tingkat rekening — dasar kroscek kebutuhan: nilai
-  // bulan terakhir dikali sisa bulan harusnya mendekati angka proyeksinya.
+  // bulan terakhir dikali sisa bulan harusnya mendekati angka proyeksinya. Ikut
+  // dipakai membentuk perBulanGolongan (realisasi per bulan per PNS/PPPK) di bawah.
   const [bulanRekRows] = await db.query(
-    `SELECT kode_skpd, kode_rekening, bulan,
+    `SELECT kode_sub_skpd AS kode_skpd, kode_rekening, bulan,
        SUM(CASE WHEN ${SP2D_SAH} THEN nilai_realisasi ELSE 0 END) AS sp2d
      FROM dokumen_realisasi
      WHERE tahun_id = ? AND ${awalan.sql} AND bulan IS NOT NULL
-     GROUP BY kode_skpd, kode_rekening, bulan`,
+     GROUP BY kode_sub_skpd, kode_rekening, bulan`,
     [tahun_id, ...awalan.params]
   )
 
-  // Gabung anggaran & realisasi per SKPD → rekening. Kunci cukup kode_skpd +
-  // kode_rekening (sub unit dijumlahkan, karena satu sheet = satu dinas).
+  // Gabung anggaran & realisasi per unit SKPD → rekening.
   const skpdMap = new Map()
 
   function ambilSkpd(kode, nama) {
@@ -106,7 +113,9 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
       s = {
         kodeSkpd: kode, namaSkpd: nama || kode,
         pagu: 0, spp: 0, sp2d: 0,
-        perBulan: {}, sp2dPerBulan: {}, rekening: new Map(),
+        // perBulanGolongan: realisasi per bulan dipecah PNS/PPPK — dasar hitung
+        // "bulan-gaji sudah dibayar" per golongan di sheet REKAP & PER BULAN.
+        perBulan: {}, sp2dPerBulan: {}, perBulanGolongan: {}, rekening: new Map(),
       }
       skpdMap.set(kode, s)
     } else if (!s.namaSkpd && nama) {
@@ -142,6 +151,22 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
     s.sp2d += num(row.sp2d)
   }
 
+  // Rekening kanonik: gabungan seluruh kode+nama rekening yang muncul di dinas
+  // manapun (mis. Tunjangan Jabatan PNS & PPPK). Ditempelkan ke SETIAP dinas —
+  // termasuk yang tidak pernah menggaji komponen itu — supaya susunan rekening
+  // di tiap sheet identik dan bisa diperbandingkan baris-per-baris antar dinas
+  // (nol, bukan hilang, kalau memang tidak dipakai dinas itu).
+  const rekeningKanonik = new Map()
+  for (const row of paguRows) {
+    if (!rekeningKanonik.has(row.kode_rekening)) rekeningKanonik.set(row.kode_rekening, row.nama_rekening)
+  }
+  for (const row of realisasiRows) {
+    if (!rekeningKanonik.has(row.kode_rekening)) rekeningKanonik.set(row.kode_rekening, row.nama_rekening)
+  }
+  for (const s of skpdMap.values()) {
+    for (const [kode, nama] of rekeningKanonik) ambilRekening(s, kode, nama)
+  }
+
   const bulanSet = new Set()
   for (const row of bulanRows) {
     const bulan = Number(row.bulan)
@@ -161,6 +186,13 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
     let perBulan = rekPerBulan.get(kunci)
     if (!perBulan) { perBulan = {}; rekPerBulan.set(kunci, perBulan) }
     perBulan[bulan] = (perBulan[bulan] || 0) + num(row.sp2d)
+
+    // Golongan pegawai ditentukan murni dari kode rekening (…00001 = PNS,
+    // …00002 = PPPK), jadi bisa langsung dipetakan tanpa join tambahan.
+    const s = ambilSkpd(row.kode_skpd, null)
+    const gol = subRincianRekening(row.kode_rekening) || '-'
+    if (!s.perBulanGolongan[gol]) s.perBulanGolongan[gol] = {}
+    s.perBulanGolongan[gol][bulan] = (s.perBulanGolongan[gol][bulan] || 0) + num(row.sp2d)
   }
 
   const bulanList = Array.from(bulanSet).sort((a, b) => a - b)
@@ -269,6 +301,7 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
         sp2d: s.sp2d,
         sisa: s.pagu - s.sp2d,
         perBulan: s.perBulan,
+        perBulanGolongan: s.perBulanGolongan,
         medianBulan,
         bulanGajiTerbayar,
         // true = pembagi jatuh ke bulan kalender karena median tidak bisa dihitung

@@ -210,7 +210,13 @@ function petaLabelGolongan(data) {
 }
 
 // [{ kunci, label, rows }] urut golongan (PNS sebelum PPPK), isinya urut kode.
-function kelompokkanGolongan(rekening, peta) {
+//
+// `canonicalGol` = seluruh golongan yang ada di data secara keseluruhan (lintas
+// dinas). Kalau diisi, golongan yang tidak dimiliki dinas ini (mis. dinas tanpa
+// PPPK) tetap dikembalikan dengan `rows: []` — bukan hilang dari daftar — supaya
+// tiap sheet dinas selalu menampilkan blok PNS *dan* PPPK secara seragam, siap
+// dijadikan PDF tanpa dinas yang satu formatnya beda dari yang lain.
+function kelompokkanGolongan(rekening, peta, canonicalGol) {
   const map = new Map()
   for (const r of rekening || []) {
     const kunci = r.golongan || '-'
@@ -218,18 +224,30 @@ function kelompokkanGolongan(rekening, peta) {
     map.get(kunci).push(r)
   }
   const urut = (a, b) => String(a).localeCompare(String(b), 'id', { numeric: true })
-  return [...map.entries()]
-    .sort((a, b) => urut(a[0], b[0]))
-    .map(([kunci, rows]) => ({
+  const kunciSemua = new Set([...(canonicalGol || []), ...map.keys()])
+  return [...kunciSemua]
+    .sort(urut)
+    .map(kunci => ({
       kunci,
       label: peta.get(kunci) || kunci,
-      rows: rows.sort((a, b) => urut(a.kodeRekening, b.kodeRekening)),
+      rows: (map.get(kunci) || []).sort((a, b) => urut(a.kodeRekening, b.kodeRekening)),
     }))
 }
 
 // Baris pembatas di atas tiap blok golongan.
 function barisBandGolongan(ws, g, kolomTerakhir) {
-  const row = ws.addRow([g.label, `${g.rows.length} rekening`])
+  return barisBand(ws, g.label, `${g.rows.length} rekening`, kolomTerakhir)
+}
+
+// Sama seperti barisBandGolongan, tapi untuk sheet lintas-dinas (REKAP, PER
+// BULAN, PROYEKSI AKHIR, AKHIR REKENING) yang dikelompokkan PNS dulu (seluruh
+// dinas), baru PPPK (seluruh dinas) — bukan dikelompokkan per rekening.
+function barisBandGolonganDinas(ws, label, jumlahDinas, kolomTerakhir) {
+  return barisBand(ws, label, `${jumlahDinas} dinas`, kolomTerakhir)
+}
+
+function barisBand(ws, label, keterangan, kolomTerakhir) {
+  const row = ws.addRow([label, keterangan])
   for (let c = 1; c <= kolomTerakhir; c++) {
     const cell = row.getCell(c)
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GOL_BAND } }
@@ -265,8 +283,37 @@ function rincianSim(namaRekening) {
   return RINCIAN_SIM.find(r => r.cocok.test(String(namaRekening || '')))?.rincian || null
 }
 
-function jumlahRekeningKurang(skpd) {
-  return (skpd.rekening || []).filter(r => r.selisih < 0).length
+function jumlahRekeningKurangGolongan(skpd, kunci) {
+  return (skpd.rekening || []).filter(r => r.golongan === kunci && r.selisih < 0).length
+}
+
+function selisihGolongan(skpd, kunci) {
+  return (skpd.rekening || []).filter(r => r.golongan === kunci).reduce((a, r) => a + r.selisih, 0)
+}
+
+// Duplikat kecil dari median() di backend (api/src/routes/proyeksiGaji.js) —
+// sengaja, supaya util Excel ini tidak perlu mengimpor modul backend hanya
+// untuk satu fungsi murni. Dipakai menghitung "bulan-gaji sudah dibayar" per
+// golongan di sheet REKAP dan PER BULAN dari `perBulanGolongan` (payload API).
+function median(values) {
+  const v = values.filter(n => n > 0).sort((a, b) => a - b)
+  if (!v.length) return 0
+  const mid = Math.floor(v.length / 2)
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2
+}
+
+// Median bulan rutin per golongan, dan bulan-gaji sudah dibayar yang diturunkan
+// darinya (realisasi golongan itu ÷ median). Dinas tanpa realisasi bulanan
+// golongan ini (mis. belum pernah bayar PPPK) jatuh ke pembagi dinasnya.
+function bulanGolongan(skpd, kunci, bulanList) {
+  const perBulan = skpd.perBulanGolongan?.[kunci] || {}
+  const nilaiBulan = bulanList.map(b => perBulan[b] || 0)
+  const medianBulan = median(nilaiBulan)
+  const sp2d = (skpd.rekening || []).filter(r => r.golongan === kunci).reduce((a, r) => a + r.sp2d, 0)
+  const bulanGajiTerbayar = medianBulan > 0
+    ? Math.round((sp2d / medianBulan) * 100) / 100
+    : skpd.bulanGajiTerbayar
+  return { perBulan, medianBulan, sp2d, bulanGajiTerbayar }
 }
 
 function labelSisaBulan(bulanTerakhir) {
@@ -294,6 +341,10 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
   // Peta sub rincian objek -> label golongan (00001 -> PNS, 00002 -> PPPK).
   // Dipakai semua sheet tingkat rekening supaya namanya seragam.
   const petaGol = petaLabelGolongan(data)
+  // Seluruh golongan yang ada di data manapun (lintas dinas) — dipakai supaya
+  // setiap dinas selalu punya baris/blok PNS *dan* PPPK, bahkan yang tidak
+  // punya PPPK sama sekali (anggarannya nol, bukan hilang dari sheet).
+  const canonicalGol = [...petaGol.keys()].sort((a, b) => String(a).localeCompare(String(b), 'id', { numeric: true }))
 
   const wb = new ExcelJS.Workbook()
   wb.creator = 'BPKAD Superapps'
@@ -339,6 +390,13 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     wsRekap,
     'Kolom "Sim Gaji /Bln" diisi di sheet tiap dinas (kolom kuning) — kolom Kebutuhan, Selisih, dan Status ikut terhitung ulang otomatis. ' +
     'Baris berlatar MERAH = anggarannya tidak cukup sampai akhir tahun; kolom "Rekening Kurang" menunjukkan berapa rekening yang kurang di dinas itu.',
+    REKAP_KOL,
+    { bold: false, size: 9, color: 'FF98A2B3' }
+  )
+  judul(
+    wsRekap,
+    'Dikelompokkan per golongan pegawai — blok PNS dulu (seluruh dinas), baru blok PPPK (seluruh dinas) — masing-masing ' +
+    'ditutup baris SUBTOTAL. Dinas yang tidak punya PPPK tetap muncul di blok PPPK, anggarannya nol.',
     REKAP_KOL,
     { bold: false, size: 9, color: 'FF98A2B3' }
   )
@@ -401,10 +459,26 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     const barisPertama = header.number + 1
 
     // Rekening dipecah per golongan: seluruh PNS dulu, baru PPPK, masing-masing
-    // ditutup baris SUBTOTAL sendiri.
+    // ditutup baris SUBTOTAL sendiri. `subtotalByGol` dipakai sheet REKAP untuk
+    // merujuk baris SUBTOTAL golongan ini di sheet dinas ini.
     const subtotalGol = []
-    for (const g of kelompokkanGolongan(s.rekening, petaGol)) {
+    const subtotalByGol = {}
+    for (const g of kelompokkanGolongan(s.rekening, petaGol, canonicalGol)) {
       barisBandGolongan(ws, g, KOL)
+
+      // Dinas ini tidak punya rekening golongan ini sama sekali (mis. tidak
+      // punya PPPK) — tetap ditulis satu baris SUBTOTAL bernilai nol, bukan
+      // dilewatkan, supaya sheet ini seragam dengan dinas yang punya PPPK dan
+      // siap dijadikan PDF tanpa formatnya berbeda-beda antar dinas.
+      if (!g.rows.length) {
+        const sub = ws.addRow(['SUBTOTAL', g.label, 0, 0, null, 0, 0, 0, 0, 0, 0, 'CUKUP'])
+        styleSubtotal(sub, KOL)
+        sub.getCell(12).alignment = { horizontal: 'center' }
+        subtotalGol.push(sub.number)
+        subtotalByGol[g.kunci] = sub.number
+        continue
+      }
+
       const golAwal = ws.rowCount + 1
       const selRincianGol = [] // sel Sim Gaji baris rincian — dikurangkan dari SUBTOTAL
       for (const r of g.rows) {
@@ -484,6 +558,7 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       sub.getCell(12).alignment = { horizontal: 'center' }
       if (g.rows.reduce((a, r) => a + r.selisih, 0) < 0) tandaiKurang(sub, KOL, { kolomTeks: [11, 12] })
       subtotalGol.push(sub.number)
+      subtotalByGol[g.kunci] = sub.number
     }
 
     const barisTerakhir = ws.rowCount
@@ -520,45 +595,84 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       aturanSelisihMerah(ws, 'K', barisPertama, total.number)
     }
 
-    sheetInfo.push({ nama, barisTotal: total.number, refTerbayar: REF_TERBAYAR })
+    sheetInfo.push({ nama, barisTotal: total.number, refTerbayar: REF_TERBAYAR, subtotalByGol })
   })
 
   // ---- Isi baris REKAP (menarik dari baris TOTAL tiap sheet dinas) ----
   const rekapBarisPertama = headerRekap.number + 1
 
-  data.skpd.forEach((s, idx) => {
-    const info = sheetInfo[idx]
-    const ref = `'${info.nama}'!`
-    const t = info.barisTotal
-    const row = wsRekap.addRow([
-      idx + 1,
-      s.namaSkpd,
-      { formula: `${ref}C${t}` },
-      { formula: `${ref}D${t}` },
-      { formula: `${ref}G${t}` },
-      { formula: `${ref}F${t}` },
-      { formula: `${ref}H${t}` },
-      { formula: `${ref}I${t}` },
-      { formula: `${ref}J${t}` },
-      { formula: `${ref}K${t}` },
-      { formula: `${ref}L${t}` },
-      jumlahRekeningKurang(s) || null,
-      { formula: `${ref}${info.refTerbayar}` },
+  // Dikelompokkan per golongan pegawai dulu — blok PNS berisi SELURUH dinas,
+  // baru blok PPPK berisi SELURUH dinas — bukan tiap dinas dipecah jadi dua
+  // baris berdekatan. `subtotalGolRekap` dipakai baris TOTAL di bawah supaya
+  // yang dijumlahkan cuma baris SUBTOTAL, bukan seluruh rentang (yang sudah
+  // memuat baris SUBTOTAL itu sendiri).
+  const subtotalGolRekap = []
+  for (const kunci of canonicalGol) {
+    const golLabel = petaGol.get(kunci) || kunci
+    barisBandGolonganDinas(wsRekap, golLabel, data.skpd.length, REKAP_KOL)
+    const golAwal = wsRekap.rowCount + 1
+
+    data.skpd.forEach((s, idx) => {
+      const info = sheetInfo[idx]
+      const ref = `'${info.nama}'!`
+      const t = info.subtotalByGol[kunci]
+      // Baris SUBTOTAL golongan ini mungkin tidak ada (dinas belum pernah
+      // dibangun sheetnya dengan golongan itu) — jangan sampai diam-diam salah
+      // menunjuk baris lain.
+      if (!t) return
+      const { bulanGajiTerbayar } = bulanGolongan(s, kunci, bulanList)
+      const jmlKurang = jumlahRekeningKurangGolongan(s, kunci)
+      const row = wsRekap.addRow([
+        idx + 1,
+        s.namaSkpd,
+        { formula: `${ref}C${t}` },
+        { formula: `${ref}D${t}` },
+        { formula: `${ref}G${t}` },
+        { formula: `${ref}F${t}` },
+        { formula: `${ref}H${t}` },
+        { formula: `${ref}I${t}` },
+        { formula: `${ref}J${t}` },
+        { formula: `${ref}K${t}` },
+        { formula: `${ref}L${t}` },
+        jmlKurang || null,
+        bulanGajiTerbayar,
+      ])
+      row.font = { size: 10 }
+      for (let c = 1; c <= REKAP_KOL; c++) row.getCell(c).border = garis()
+      row.getCell(1).alignment = { horizontal: 'center' }
+      for (const c of [11, 12, 13]) row.getCell(c).alignment = { horizontal: 'center' }
+      if (selisihGolongan(s, kunci) < 0) tandaiKurang(row, REKAP_KOL, { kolomTeks: [10, 11] })
+      if (jmlKurang) {
+        row.getCell(12).font = { size: 10, bold: true, color: { argb: MERAH_TEKS } }
+      }
+    })
+
+    const golAkhir = wsRekap.rowCount
+    const jumGol = (kol) => `SUM(${kol}${golAwal}:${kol}${golAkhir})`
+    const ns = golAkhir + 1
+    const sub = wsRekap.addRow([
+      null, `SUBTOTAL ${golLabel}`,
+      { formula: jumGol('C') },
+      { formula: jumGol('D') },
+      { formula: jumGol('E') },
+      { formula: jumGol('F') },
+      { formula: jumGol('G') },
+      { formula: jumGol('H') },
+      { formula: jumGol('I') },
+      { formula: jumGol('J') },
+      { formula: `IF(J${ns}<0,"KURANG","CUKUP")` },
+      { formula: jumGol('L') },
+      null,
     ])
-    row.font = { size: 10 }
-    for (let c = 1; c <= REKAP_KOL; c++) row.getCell(c).border = garis()
-    row.getCell(1).alignment = { horizontal: 'center' }
-    for (const c of [11, 12, 13]) row.getCell(c).alignment = { horizontal: 'center' }
-    if (s.selisih < 0) tandaiKurang(row, REKAP_KOL, { kolomTeks: [10, 11] })
-    if (jumlahRekeningKurang(s)) {
-      row.getCell(12).font = { size: 10, bold: true, color: { argb: MERAH_TEKS } }
-    }
-  })
+    styleSubtotal(sub, REKAP_KOL)
+    for (const c of [11, 12]) sub.getCell(c).alignment = { horizontal: 'center' }
+    subtotalGolRekap.push(sub.number)
+  }
 
   const rekapBarisTerakhir = wsRekap.rowCount
-  if (rekapBarisTerakhir >= rekapBarisPertama) {
+  if (subtotalGolRekap.length) {
     const n = rekapBarisTerakhir + 1
-    const jum = (kol) => `SUM(${kol}${rekapBarisPertama}:${kol}${rekapBarisTerakhir})`
+    const jum = (kol) => subtotalGolRekap.map(b => `${kol}${b}`).join('+')
     const total = wsRekap.addRow([
       null, 'TOTAL SELURUH SKPD',
       { formula: jum('C') },
@@ -570,7 +684,7 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       { formula: jum('I') },
       { formula: jum('J') },
       { formula: `IF(J${n}<0,"KURANG","CUKUP")` },
-      { formula: `SUM(L${rekapBarisPertama}:L${rekapBarisTerakhir})` },
+      { formula: jum('L') },
       null,
     ])
     styleBarisTotal(total, REKAP_KOL)
@@ -589,14 +703,16 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
   // ---- Sheet PER BULAN: dasar hitungan bulan-gaji ----
   {
     const ws = wb.addWorksheet('PER BULAN', { views: [{ state: 'frozen', xSplit: 2, ySplit: 5 }] })
-    const KOL = 2 + bulanList.length + 3
+    const AWAL = 2 // No, Nama SKPD
+    const KOL = AWAL + bulanList.length + 3
 
     judul(ws, 'REALISASI SP2D PER BULAN', KOL, { size: 12, height: 20 })
     judul(ws, `TA ${tahun} · Rekening ${prefix}* · dasar perhitungan jumlah bulan-gaji yang sudah dibayar`, KOL,
       { bold: false, size: 10, color: 'FF667085' })
     judul(ws,
       '"Median Bulan Rutin" = nilai satu bulan gaji normal, diambil median supaya tidak tertarik naik oleh bulan ber-THR / gaji ke-13. ' +
-      '"Bulan-Gaji Sudah Dibayar" = Total ÷ Median — inilah pembagi yang dipakai di sheet tiap dinas.',
+      '"Bulan-Gaji Sudah Dibayar" = Total ÷ Median — inilah pembagi yang dipakai di sheet tiap dinas. ' +
+      'Dikelompokkan per golongan pegawai — blok PNS dulu (seluruh dinas), baru blok PPPK (seluruh dinas).',
       KOL, { bold: false, size: 9, color: 'FF98A2B3' })
     ws.addRow([])
 
@@ -608,40 +724,70 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     styleHeader(header, KOL)
     ws.getColumn(1).width = 5
     ws.getColumn(2).width = 40
-    for (let i = 0; i < bulanList.length; i++) ws.getColumn(3 + i).width = 16
-    ws.getColumn(2 + bulanList.length + 1).width = 18
-    ws.getColumn(2 + bulanList.length + 2).width = 18
-    ws.getColumn(2 + bulanList.length + 3).width = 15
+    for (let i = 0; i < bulanList.length; i++) ws.getColumn(AWAL + 1 + i).width = 16
+    ws.getColumn(AWAL + bulanList.length + 1).width = 18
+    ws.getColumn(AWAL + bulanList.length + 2).width = 18
+    ws.getColumn(AWAL + bulanList.length + 3).width = 15
 
-    const barisPertama = header.number + 1
-    data.skpd.forEach((s, idx) => {
-      const row = ws.addRow([
-        idx + 1, s.namaSkpd,
-        ...bulanList.map(b => s.perBulan?.[b] || 0),
-        s.sp2d,
-        s.medianBulan || 0,
-        s.bulanGajiTerbayar,
-      ])
-      row.font = { size: 10 }
-      for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
-      row.getCell(1).alignment = { horizontal: 'center' }
-      row.getCell(KOL).alignment = { horizontal: 'center' }
-    })
+    const subtotalGolBulan = []
+    for (const kunci of canonicalGol) {
+      const golLabel = petaGol.get(kunci) || kunci
+      barisBandGolonganDinas(ws, golLabel, data.skpd.length, KOL)
+      const golAwal = ws.rowCount + 1
+      const totalPerBulanGol = bulanList.map(() => 0)
+      let sp2dGolTotal = 0
+
+      data.skpd.forEach((s, idx) => {
+        const { perBulan, medianBulan, sp2d, bulanGajiTerbayar } = bulanGolongan(s, kunci, bulanList)
+        bulanList.forEach((b, i) => { totalPerBulanGol[i] += perBulan[b] || 0 })
+        sp2dGolTotal += sp2d
+        const row = ws.addRow([
+          idx + 1, s.namaSkpd,
+          ...bulanList.map(b => perBulan[b] || 0),
+          sp2d,
+          medianBulan || 0,
+          bulanGajiTerbayar,
+        ])
+        row.font = { size: 10 }
+        for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
+        row.getCell(1).alignment = { horizontal: 'center' }
+        row.getCell(KOL).alignment = { horizontal: 'center' }
+      })
+
+      const golAkhir = ws.rowCount
+      const sub = ws.addRow([null, `SUBTOTAL ${golLabel}`])
+      for (let c = AWAL + 1; c <= AWAL + bulanList.length + 1; c++) {
+        const kol = ws.getColumn(c).letter
+        sub.getCell(c).value = { formula: `SUM(${kol}${golAwal}:${kol}${golAkhir})` }
+      }
+      // Median & bulan-gaji sudah dibayar golongan ini sekabupaten — dihitung
+      // dari total per bulan yang baru dijumlahkan (sama seperti data.medianTotal
+      // dihitung di tingkat kabupaten), bukan dirata-rata dari tiap dinas.
+      const medianGolTotal = median(totalPerBulanGol)
+      const bulanGajiTerbayarGolTotal = medianGolTotal > 0
+        ? Math.round((sp2dGolTotal / medianGolTotal) * 100) / 100
+        : data.bulanGajiTerbayarTotal
+      sub.getCell(AWAL + bulanList.length + 2).value = medianGolTotal || 0
+      sub.getCell(KOL).value = bulanGajiTerbayarGolTotal
+      styleSubtotal(sub, KOL)
+      sub.getCell(KOL).alignment = { horizontal: 'center' }
+      subtotalGolBulan.push(sub.number)
+    }
 
     const barisTerakhir = ws.rowCount
-    if (barisTerakhir >= barisPertama) {
+    if (subtotalGolBulan.length) {
       const total = ws.addRow([null, 'TOTAL SELURUH SKPD'])
-      for (let c = 3; c <= 2 + bulanList.length + 1; c++) {
+      for (let c = AWAL + 1; c <= AWAL + bulanList.length + 1; c++) {
         const kol = ws.getColumn(c).letter
-        total.getCell(c).value = { formula: `SUM(${kol}${barisPertama}:${kol}${barisTerakhir})` }
+        total.getCell(c).value = { formula: subtotalGolBulan.map(b => `${kol}${b}`).join('+') }
       }
-      total.getCell(2 + bulanList.length + 2).value = data.medianTotal || 0
+      total.getCell(AWAL + bulanList.length + 2).value = data.medianTotal || 0
       total.getCell(KOL).value = data.bulanGajiTerbayarTotal
       styleBarisTotal(total, KOL)
       total.getCell(KOL).alignment = { horizontal: 'center' }
     }
 
-    for (let c = 3; c <= 2 + bulanList.length + 2; c++) ws.getColumn(c).numFmt = FMT_RP
+    for (let c = AWAL + 1; c <= AWAL + bulanList.length + 2; c++) ws.getColumn(c).numFmt = FMT_RP
     ws.getColumn(KOL).numFmt = FMT_DESIMAL
   }
 
@@ -689,7 +835,7 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
 
     const barisPertama = header.number + 1
     const subtotalGol = []
-    for (const g of kelompokkanGolongan(data.rekening, petaGol)) {
+    for (const g of kelompokkanGolongan(data.rekening, petaGol, canonicalGol)) {
       barisBandGolongan(ws, g, KOL)
       const golAwal = ws.rowCount + 1
       for (const r of g.rows) {
@@ -805,7 +951,9 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     judul(ws,
       'Kolom "Dibayar (kali)" adalah pembagi milik tiap rekening, dijumlahkan ke tingkat dinas di sini: gaji pokok ' +
       `ikut terbayar di bulan THR dan gaji ke-13 (±${Math.round(data.bulanGajiTerbayarTotal)} kali), sedangkan iuran ` +
-      `BPJS/JKK/JKM hanya sekali sebulan (${bulanTerakhir || '—'} kali). Rinciannya ada di sheet AKHIR REKENING.`,
+      `BPJS/JKK/JKM hanya sekali sebulan (${bulanTerakhir || '—'} kali). Rinciannya ada di sheet AKHIR REKENING. ` +
+      'Dikelompokkan per golongan pegawai — blok PNS dulu (seluruh dinas), baru blok PPPK (seluruh dinas), masing-masing ' +
+      'ditutup baris SUBTOTAL. Acress % boleh diubah per baris.',
       KOL, { bold: false, size: 9, color: 'FF98A2B3' })
     judul(ws, ceritaAkhir(akhir), KOL, {
       bold: true, size: 10, height: 18,
@@ -827,40 +975,60 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     KOLOM.forEach((k, i) => { ws.getColumn(i + 1).width = k.width })
 
     const barisPertama = header.number + 1
-    akhir.skpd.forEach((s, i) => {
-      const n = ws.rowCount + 1
-      const row = ws.addRow([
-        i + 1, s.namaSkpd, s.pagu, s.sp2d,
-        s.rataRata > 0 ? Math.round((s.sp2d / s.rataRata) * 100) / 100 : null,
-        s.perBulanRutin,
-        { formula: `F${n}*${bulanSisa}` },
-        { formula: `D${n}+G${n}` },
-        s.terkunci ? null : akhir.persenAkhir / 100,
-        { formula: `IF(I${n}="",0,H${n}*I${n})` },
-        s.terkunci ? s.pagu : { formula: `H${n}+J${n}` },
-        { formula: `K${n}-C${n}` },
-        { formula: s.terkunci ? '"DIKUNCI"' : `IF(L${n}>0,"TAMBAH",IF(L${n}<0,"KURANGI","TETAP"))` },
+    // Dikelompokkan per golongan pegawai dulu — blok PNS berisi SELURUH dinas,
+    // baru blok PPPK berisi SELURUH dinas — bukan tiap dinas dipecah jadi dua
+    // baris berdekatan.
+    const subtotalGolAkhir = []
+    for (const kunci of canonicalGol) {
+      const golLabel = petaGol.get(kunci) || kunci
+      barisBandGolonganDinas(ws, golLabel, akhir.skpd.length, KOL)
+      const golAwal = ws.rowCount + 1
+
+      akhir.skpd.forEach((s, i) => {
+        const g = s.golongan.find(gg => gg.kunci === kunci)
+        if (!g) return
+        const n = ws.rowCount + 1
+        const row = ws.addRow([
+          i + 1, s.namaSkpd, g.pagu, g.sp2d,
+          g.dibayar || null,
+          g.perBulanRutin,
+          { formula: `F${n}*${bulanSisa}` },
+          { formula: `D${n}+G${n}` },
+          s.terkunci ? null : akhir.persenAkhir / 100,
+          { formula: `IF(I${n}="",0,H${n}*I${n})` },
+          s.terkunci ? g.pagu : { formula: `H${n}+J${n}` },
+          { formula: `K${n}-C${n}` },
+          { formula: s.terkunci ? '"DIKUNCI"' : `IF(L${n}>0,"TAMBAH",IF(L${n}<0,"KURANGI","TETAP"))` },
+        ])
+        row.font = { size: 10 }
+        for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
+        for (const c of [1, 5, 9, 13]) row.getCell(c).alignment = { horizontal: 'center' }
+        // Kolom acress boleh diubah pemakai — ditandai kuning seperti kolom isian
+        // lain di berkas ini.
+        if (!s.terkunci) row.getCell(9).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
+        if (g.pergeseran > 0) tandaiTambah(row, KOL, { lewati: [9], kolomTeks: [12] })
+        else if (s.terkunci) tandaiKunci(row, KOL)
+      })
+
+      const golAkhir = ws.rowCount
+      const ns = golAkhir + 1
+      const jumGol = (kol) => `SUM(${kol}${golAwal}:${kol}${golAkhir})`
+      const sub = ws.addRow([
+        null, `SUBTOTAL ${golLabel}`,
+        { formula: jumGol('C') }, { formula: jumGol('D') },
+        null, // laju bayar tiap rekening berbeda — tidak ada artinya dijumlahkan
+        { formula: jumGol('F') }, { formula: jumGol('G') }, { formula: jumGol('H') },
+        null, // acress tiap baris bisa berbeda kalau diubah manual
+        { formula: jumGol('J') }, { formula: jumGol('K') }, { formula: jumGol('L') },
+        { formula: `IF(L${ns}>0,"TAMBAH",IF(L${ns}<0,"KURANGI","TETAP"))` },
       ])
-      row.font = { size: 10 }
-      for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
-      for (const c of [1, 5, 9, 13]) row.getCell(c).alignment = { horizontal: 'center' }
-      // Kolom acress boleh diubah pemakai — ditandai kuning seperti kolom isian
-      // lain di berkas ini.
-      if (!s.terkunci) row.getCell(9).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
-      if (s.tren > 1.01) {
-        const sel = row.getCell(6)
-        sel.font = { ...(sel.font || {}), italic: true, color: { argb: AMBER_TEKS } }
-        sel.note = `Tiga kali bayar terakhir rata-rata ${s.tren}× dari rata-rata tahun berjalan — gajinya sedang naik. ` +
-          `Tertinggi sekali bayar ${rupiah(s.tertinggi)} vs rata² ${rupiah(s.rataRata)}.`
-      }
-      if (s.pergeseran > 0) tandaiTambah(row, KOL, { lewati: [9], kolomTeks: [12] })
-      else if (s.terkunci) tandaiKunci(row, KOL)
-    })
+      styleSubtotal(sub, KOL)
+      subtotalGolAkhir.push(sub.number)
+    }
 
     const barisTerakhir = ws.rowCount
-    if (barisTerakhir >= barisPertama) {
-      const n = barisTerakhir + 1
-      const jum = (kol) => `SUM(${kol}${barisPertama}:${kol}${barisTerakhir})`
+    if (subtotalGolAkhir.length) {
+      const jum = (kol) => subtotalGolAkhir.map(b => `${kol}${b}`).join('+')
       const total = ws.addRow([
         'TOTAL', null,
         { formula: jum('C') }, { formula: jum('D') },
@@ -891,16 +1059,15 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
 
   // ---- Sheet AKHIR REKENING: rincian usulan sampai tingkat rekening ----
   //
-  // Bentuk datar (satu baris = satu dinas × satu rekening), urut per golongan
-  // pegawai lalu per kode. Kolomnya sama dengan sheet PROYEKSI AKHIR, jadi
-  // acress di sini pun boleh diubah per baris.
+  // Bentuk datar (satu baris = satu dinas × satu rekening), dikelompokkan per
+  // golongan pegawai dulu — blok PNS berisi SELURUH dinas × rekening, baru blok
+  // PPPK berisi SELURUH dinas × rekening. Kolomnya sama dengan sheet PROYEKSI
+  // AKHIR, jadi acress di sini pun boleh diubah per baris.
   if (akhir) {
     const ws = wb.addWorksheet('AKHIR REKENING', { views: [{ state: 'frozen', xSplit: 2, ySplit: 7 }] })
-    const labelGolongan = new Map((akhir.golongan || []).map(g => [g.kunci, g.label]))
     const KOLOM = [
       { header: 'Kode SKPD', width: 16 },
       { header: 'Nama SKPD', width: 34 },
-      { header: 'Gol.', width: 7 },
       { header: 'Kode Rek', width: 21 },
       { header: 'Nama Rekening', width: 38 },
       { header: 'Pagu Sekarang', width: 17 },
@@ -921,9 +1088,10 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     judul(ws, `TA ${tahun} · Rekening ${prefix}* · Realisasi ${labelRealisasi} · dasar proyeksi: ${labelBasis}`, KOL,
       { bold: false, size: 10, color: 'FF667085' })
     judul(ws,
-      'Satu baris = satu dinas × satu rekening, urut per golongan pegawai lalu per kode — seluruh rekening PNS ' +
-      'berkumpul dulu, baru PPPK. Inilah lampiran usulan pergeserannya. Kolom "Dibayar (kali)" adalah pembagi ' +
-      'rekening itu sendiri: iuran BPJS hanya sekali sebulan, gaji pokok ikut terbayar di bulan THR dan gaji ke-13.',
+      'Satu baris = satu dinas × satu rekening. Dikelompokkan per golongan pegawai dulu — blok PNS berisi seluruh ' +
+      'dinas, baru blok PPPK berisi seluruh dinas, masing-masing ditutup baris SUBTOTAL. Inilah lampiran usulan ' +
+      'pergeserannya. Kolom "Dibayar (kali)" adalah pembagi rekening itu sendiri: iuran BPJS hanya sekali sebulan, ' +
+      'gaji pokok ikut terbayar di bulan THR dan gaji ke-13.',
       KOL, { bold: false, size: 9, color: 'FF98A2B3' })
     judul(ws,
       `Jumlah baris: ${akhir.skpd.reduce((a, s) => a + s.rekening.length, 0)} · ` +
@@ -941,54 +1109,78 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     KOLOM.forEach((k, i) => { ws.getColumn(i + 1).width = k.width })
 
     const barisPertama = header.number + 1
-    for (const s of akhir.skpd) {
-      for (const r of s.rekening) {
-        const n = ws.rowCount + 1
-        const row = ws.addRow([
-          s.kodeSkpd, s.namaSkpd, labelGolongan.get(r.golongan) || r.golongan,
-          r.kodeRekening, r.namaRekening,
-          r.pagu, r.sp2d, r.dibayar || null, r.perBulanRutin,
-          { formula: `I${n}*${REF_SISA}` },
-          { formula: `G${n}+J${n}` },
-          s.terkunci ? null : akhir.persenAkhir / 100,
-          { formula: `IF(L${n}="",0,K${n}*L${n})` },
-          s.terkunci ? r.pagu : { formula: `K${n}+M${n}` },
-          { formula: `N${n}-F${n}` },
-          s.terkunci ? 'Dinas dikunci — tanpa dasar hitung'
-            : r.tanpaRealisasi ? 'Belum pernah dibayar — pagu ditarik penuh'
-            : r.dibayarPerkiraan ? 'Belum ada realisasi bulanan — pembagi dinas dipinjam'
-            : null,
-        ])
-        row.font = { size: 10 }
-        for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
-        row.getCell(1).font = { size: 10, name: 'Consolas' }
-        row.getCell(4).font = { size: 10, name: 'Consolas' }
-        for (const c of [3, 8, 12]) row.getCell(c).alignment = { horizontal: 'center' }
-        row.getCell(16).font = { size: 9, italic: true, color: { argb: 'FF98A2B3' } }
-        if (!s.terkunci) row.getCell(12).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
-        if (r.pergeseran > 0) tandaiTambah(row, KOL, { lewati: [12], kolomTeks: [15] })
-        else if (s.terkunci) tandaiKunci(row, KOL)
+    const subtotalGolRek = []
+    for (const kunci of canonicalGol) {
+      const golLabel = petaGol.get(kunci) || kunci
+      barisBandGolonganDinas(ws, golLabel, akhir.skpd.length, KOL)
+      const golAwal = ws.rowCount + 1
+
+      for (const s of akhir.skpd) {
+        for (const r of s.rekening.filter(r => r.golongan === kunci)) {
+          const n = ws.rowCount + 1
+          const row = ws.addRow([
+            s.kodeSkpd, s.namaSkpd,
+            r.kodeRekening, r.namaRekening,
+            r.pagu, r.sp2d, r.dibayar || null, r.perBulanRutin,
+            { formula: `H${n}*${REF_SISA}` },
+            { formula: `F${n}+I${n}` },
+            s.terkunci ? null : akhir.persenAkhir / 100,
+            { formula: `IF(K${n}="",0,J${n}*K${n})` },
+            s.terkunci ? r.pagu : { formula: `J${n}+L${n}` },
+            { formula: `M${n}-E${n}` },
+            s.terkunci ? 'Dinas dikunci — tanpa dasar hitung'
+              : r.tanpaRealisasi ? 'Belum pernah dibayar — pagu ditarik penuh'
+              : r.dibayarPerkiraan ? 'Belum ada realisasi bulanan — pembagi dinas dipinjam'
+              : null,
+          ])
+          row.font = { size: 10 }
+          for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
+          row.getCell(1).font = { size: 10, name: 'Consolas' }
+          row.getCell(3).font = { size: 10, name: 'Consolas' }
+          for (const c of [7, 11] ) row.getCell(c).alignment = { horizontal: 'center' }
+          row.getCell(15).font = { size: 9, italic: true, color: { argb: 'FF98A2B3' } }
+          if (!s.terkunci) row.getCell(11).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
+          if (r.pergeseran > 0) tandaiTambah(row, KOL, { lewati: [11], kolomTeks: [14] })
+          else if (s.terkunci) tandaiKunci(row, KOL)
+        }
       }
+
+      const golAkhir = ws.rowCount
+      const jumGol = (kol) => `SUM(${kol}${golAwal}:${kol}${golAkhir})`
+      const sub = ws.addRow([
+        null, `SUBTOTAL ${golLabel}`, null, null,
+        { formula: jumGol('E') }, { formula: jumGol('F') },
+        null,
+        { formula: jumGol('H') }, { formula: jumGol('I') }, { formula: jumGol('J') },
+        null,
+        { formula: jumGol('L') }, { formula: jumGol('M') }, { formula: jumGol('N') },
+        null,
+      ])
+      styleSubtotal(sub, KOL)
+      subtotalGolRek.push(sub.number)
     }
 
     const barisTerakhir = ws.rowCount
-    if (barisTerakhir >= barisPertama) {
-      const jum = (kol) => `SUM(${kol}${barisPertama}:${kol}${barisTerakhir})`
+    if (subtotalGolRek.length) {
+      const jum = (kol) => subtotalGolRek.map(b => `${kol}${b}`).join('+')
       const total = ws.addRow([
-        'TOTAL', null, null, null, null,
-        { formula: jum('F') }, { formula: jum('G') }, null,
-        { formula: jum('I') }, { formula: jum('J') }, { formula: jum('K') }, null,
-        { formula: jum('M') }, { formula: jum('N') }, { formula: jum('O') }, null,
+        'TOTAL', null, null, null,
+        { formula: jum('E') }, { formula: jum('F') },
+        null,
+        { formula: jum('H') }, { formula: jum('I') }, { formula: jum('J') },
+        null,
+        { formula: jum('L') }, { formula: jum('M') }, { formula: jum('N') },
+        null,
       ])
       styleBarisTotal(total, KOL)
       ws.autoFilter = { from: { row: header.number, column: 1 }, to: { row: barisTerakhir, column: KOL } }
-      aturanSelisihMerah(ws, 'O', barisPertama, total.number)
+      aturanSelisihMerah(ws, 'N', barisPertama, total.number)
     }
 
-    for (const kol of ['F', 'G', 'I', 'J', 'K', 'M', 'N']) ws.getColumn(kol).numFmt = FMT_RP
-    ws.getColumn('H').numFmt = FMT_DESIMAL
-    ws.getColumn('L').numFmt = '0.00%'
-    ws.getColumn('O').numFmt = FMT_PERGESERAN
+    for (const kol of ['E', 'F', 'H', 'I', 'J', 'L', 'M']) ws.getColumn(kol).numFmt = FMT_RP
+    ws.getColumn('G').numFmt = FMT_DESIMAL
+    ws.getColumn('K').numFmt = '0.00%'
+    ws.getColumn('N').numFmt = FMT_PERGESERAN
   }
 
   return wb.xlsx.writeBuffer()
