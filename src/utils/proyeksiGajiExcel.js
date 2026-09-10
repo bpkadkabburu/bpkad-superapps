@@ -17,6 +17,11 @@ import ExcelJS from 'exceljs'
 // kalau memang perlu). Kolom "Sim Gaji /Bln" sengaja dibiarkan kosong: begitu
 // diisi, kolom Kebutuhan, Selisih, dan Status ikut terhitung ulang.
 
+// Versi format file export. Dinaikkan kalau tata letak sheet dinas berubah
+// sampai pembacanya (proyeksiGajiImport.js) ikut harus diubah — pembaca menolak
+// versi yang tidak dikenalnya, supaya isian tidak pernah masuk ke kolom keliru.
+export const VERSI_META = 1
+
 const NAMA_BULAN = ['', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
   'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
 
@@ -279,6 +284,17 @@ const RINCIAN_SIM = [
   { cocok: /tunjangan\s+keluarga/i, rincian: ['Tunjangan Istri', 'Tunjangan Anak'] },
 ]
 
+// Keterangan kenapa satu baris pantas/tidak pantas dicurigai. Deviasi besar di
+// rekening yang pembaginya cuma pinjaman dari dinas bukan bukti rumusnya salah —
+// bahan bakunya yang memang belum cukup.
+function catatanBanding(r) {
+  const catatan = []
+  if (r.dibayarPerkiraan) catatan.push('pembagi pinjam dari laju dinas')
+  if (r.simRincian) catatan.push(`Sim Gaji = ${Object.keys(r.simRincian).join(' + ')}`)
+  if (!r.rataRata) catatan.push('belum ada realisasi — tak bisa dibanding')
+  return catatan.length ? catatan.join('; ') : null
+}
+
 function rincianSim(namaRekening) {
   return RINCIAN_SIM.find(r => r.cocok.test(String(namaRekening || '')))?.rincian || null
 }
@@ -340,6 +356,12 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
 
   // Peta sub rincian objek -> label golongan (00001 -> PNS, 00002 -> PPPK).
   // Dipakai semua sheet tingkat rekening supaya namanya seragam.
+  // Keterangan asal isian SIM Gaji, dipakai judul sheet BANDING SIM.
+  const simInfo = data.simInfo || {}
+  const simLabel = simInfo.bulan
+    ? `${NAMA_BULAN[simInfo.bulan]} ${tahun} \u00b7 ${simInfo.dinas || 0} dari ${simInfo.totalDinas || 0} unit terisi`
+    : 'belum ada isian'
+
   const petaGol = petaLabelGolongan(data)
   // Seluruh golongan yang ada di data manapun (lintas dinas) — dipakai supaya
   // setiap dinas selalu punya baris/blok PNS *dan* PPPK, bahkan yang tidak
@@ -493,9 +515,15 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
           r.dibayar,
           // Sim Gaji — isian manual, kecuali rekening yang di SIM Gaji terpecah:
           // di situ angkanya dijumlahkan dari baris rincian di bawahnya.
-          rincian
+          // Nilai yang sudah pernah disimpan ditulis balik ke sel supaya tidak
+          // perlu diketik ulang tiap bulan; selnya tetap kuning karena masih
+          // boleh diubah.
+          // Kalau yang tersimpan cuma nilai induk tanpa rincian, berarti pemakai
+          // dulu menimpa rumusnya dengan angka langsung. Rumusnya jangan
+          // dikembalikan — nilainya akan hilang diam-diam saat file dibuka lagi.
+          rincian && !(r.sim != null && !r.simRincian)
             ? { formula: `IF(COUNT(${selRincian.join(',')})=0,"",SUM(${selRincian.join(',')}))` }
-            : null,
+            : (r.sim ?? null),
           { formula: `C${n}-D${n}` },
           { formula: `IFERROR(D${n}/E${n},0)` },
           { formula: `H${n}*${REF_SISA}` },
@@ -512,8 +540,9 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
           row.getCell(5).font = { size: 10, italic: true, color: { argb: 'FF98A2B3' } }
           row.getCell(5).note = 'Rekening ini belum punya realisasi bulanan sendiri — dipakai laju bayar dinas.'
         }
-        row.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rincian ? HIJAU : KUNING } }
-        if (rincian) {
+        const indukTerhitung = rincian && !(r.sim != null && !r.simRincian)
+        row.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: indukTerhitung ? HIJAU : KUNING } }
+        if (indukTerhitung) {
           row.getCell(6).note = `Terisi sendiri dari baris ${rincian.join(' + ')} di bawahnya — ` +
             'di SIM Gaji keduanya terpisah, rekeningnya cuma satu.'
         }
@@ -525,7 +554,8 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
         // anggaran dan realisasinya memang cuma ada di tingkat rekening (baris induk).
         for (const label of rincian || []) {
           const m = ws.rowCount + 1
-          const baris = ws.addRow([null, `        \u21b3 ${label} (isi manual)`])
+          const baris = ws.addRow([null, `        \u21b3 ${label} (isi manual)`, null, null, null,
+            r.simRincian?.[label] ?? null])
           baris.font = { size: 10, italic: true, color: { argb: 'FF667085' } }
           for (let c = 1; c <= KOL; c++) baris.getCell(c).border = garis()
           const sel = baris.getCell(6)
@@ -595,7 +625,10 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       aturanSelisihMerah(ws, 'K', barisPertama, total.number)
     }
 
-    sheetInfo.push({ nama, barisTotal: total.number, refTerbayar: REF_TERBAYAR, subtotalByGol })
+    sheetInfo.push({
+      nama, kodeSkpd: s.kodeSkpd, namaSkpd: s.namaSkpd,
+      barisTotal: total.number, refTerbayar: REF_TERBAYAR, subtotalByGol,
+    })
   })
 
   // ---- Isi baris REKAP (menarik dari baris TOTAL tiap sheet dinas) ----
@@ -912,6 +945,108 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     ws.getColumn('E').numFmt = FMT_DESIMAL
   }
 
+  // ---- Sheet BANDING SIM: angka rumus vs angka SIM Gaji ----
+  //
+  // Inti pertanyaannya: kalau proyeksi ini memakai tebakan dari realisasi SP2D,
+  // seberapa jauh melesetnya dari angka SIM Gaji yang sebenarnya? Sheet ini
+  // hanya muncul kalau sudah ada isian SIM Gaji yang tersimpan.
+  //
+  // Pembandingnya kolom Rata²/Bln (= realisasi ÷ berapa kali dibayar), bukan
+  // kolom dasar proyeksi — Rata²/Bln adalah "nilai satu kali bayar", satuan yang
+  // sama dengan "Sim Gaji /Bln". Dasar proyeksi ikut berubah kalau pemakai
+  // memilih basis "tertinggi", sehingga tidak layak jadi patokan tetap.
+  const barisBanding = data.skpd.flatMap(s =>
+    (s.rekening || []).filter(r => r.sim != null).map(r => ({ s, r }))
+  )
+
+  if (barisBanding.length) {
+    const ws = wb.addWorksheet('BANDING SIM', { views: [{ state: 'frozen', xSplit: 2, ySplit: 6 }] })
+    const KOLOM = [
+      { header: 'Kode SKPD', width: 22 },
+      { header: 'Nama SKPD', width: 34 },
+      { header: 'Kode Rek', width: 21 },
+      { header: 'Nama Rekening', width: 40 },
+      { header: 'Rata\u00b2/Bln\n(Rumus)', width: 18 },
+      { header: 'Sim Gaji /Bln', width: 18 },
+      { header: 'Selisih /Bln\n(Sim \u2212 Rumus)', width: 18 },
+      { header: 'Deviasi', width: 11 },
+      { header: `Kebutuhan ${bulanSisa} Bln\n(Rumus)`, width: 18 },
+      { header: `Kebutuhan ${bulanSisa} Bln\n(Sim Gaji)`, width: 18 },
+      { header: 'Selisih Kebutuhan', width: 18 },
+      { header: 'Catatan', width: 26 },
+    ]
+    const KOL = KOLOM.length
+
+    judul(ws, 'BANDING RUMUS vs SIM GAJI', KOL, { size: 12, height: 20 })
+    judul(ws, `TA ${tahun} \u00b7 Rekening ${prefix}* \u00b7 Sim Gaji ${simLabel} \u00b7 Rumus dari ${labelRealisasi}`, KOL,
+      { bold: false, size: 10, color: 'FF667085' })
+    judul(ws,
+      'Deviasi = Sim Gaji \u00f7 Rata\u00b2/Bln \u2212 1. Positif berarti rumusnya KERENDAHAN (kebutuhan sebenarnya lebih besar). ' +
+      'Baris merah = melesetnya di atas 5%, kuning tua = 2\u20135%. Hanya rekening yang kolom Sim Gaji-nya sudah diisi yang ikut di sini.',
+      KOL, { bold: false, size: 9, color: 'FF98A2B3' })
+    ws.addRow([])
+
+    const header = ws.addRow(KOLOM.map(k => k.header))
+    styleHeader(header, KOL)
+    KOLOM.forEach((k, i) => { ws.getColumn(i + 1).width = k.width })
+
+    const barisPertama = header.number + 1
+    for (const { s, r } of barisBanding) {
+      const n = ws.rowCount + 1
+      const row = ws.addRow([
+        s.kodeSkpd, s.namaSkpd,
+        r.kodeRekening, r.namaRekening,
+        r.rataRata,
+        r.sim,
+        { formula: `F${n}-E${n}` },
+        { formula: `IFERROR(F${n}/E${n}-1,"")` },
+        { formula: `E${n}*${bulanSisa}` },
+        { formula: `F${n}*${bulanSisa}` },
+        { formula: `J${n}-I${n}` },
+        catatanBanding(r),
+      ])
+      row.font = { size: 10 }
+      for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
+      row.getCell(1).font = { size: 10, name: 'Consolas' }
+      row.getCell(3).font = { size: 10, name: 'Consolas' }
+      row.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
+      row.getCell(8).alignment = { horizontal: 'center' }
+
+      const dev = Math.abs(r.deviasiSim ?? 0)
+      if (r.deviasiSim != null && dev > 0.05) {
+        tandaiKurang(row, KOL, { lewati: [6], kolomTeks: [8, 12] })
+      } else if (r.deviasiSim != null && dev >= 0.02) {
+        for (let c = 1; c <= KOL; c++) {
+          if (c === 6) continue
+          row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: AMBER } }
+        }
+        row.getCell(8).font = { size: 10, bold: true, color: { argb: AMBER_TEKS } }
+      }
+    }
+
+    const barisTerakhir = ws.rowCount
+    const n = barisTerakhir + 1
+    const jum = (kol) => `SUM(${kol}${barisPertama}:${kol}${barisTerakhir})`
+    const total = ws.addRow([
+      'TOTAL', `${barisBanding.length} rekening terisi`, null, null,
+      { formula: jum('E') },
+      { formula: jum('F') },
+      { formula: `F${n}-E${n}` },
+      { formula: `IFERROR(F${n}/E${n}-1,"")` },
+      { formula: jum('I') },
+      { formula: jum('J') },
+      { formula: `J${n}-I${n}` },
+      null,
+    ])
+    styleBarisTotal(total, KOL)
+    total.getCell(8).alignment = { horizontal: 'center' }
+
+    for (const kol of ['E', 'F', 'I', 'J']) ws.getColumn(kol).numFmt = FMT_RP
+    for (const kol of ['G', 'K']) ws.getColumn(kol).numFmt = FMT_RP_MERAH
+    ws.getColumn('H').numFmt = '+0.0%;-0.0%;0.0%'
+    ws.autoFilter = { from: { row: header.number, column: 1 }, to: { row: barisTerakhir, column: KOL } }
+  }
+
   // ---- Sheet PROYEKSI AKHIR: usulan alokasi per dinas ----
   //
   // Susunan kolomnya sengaja mengikuti urutan hitungan supaya bisa ditelusuri
@@ -1181,6 +1316,27 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     ws.getColumn('G').numFmt = FMT_DESIMAL
     ws.getColumn('K').numFmt = '0.00%'
     ws.getColumn('N').numFmt = FMT_PERGESERAN
+  }
+
+  // ---- Sheet _META: penanda supaya file ini bisa diunggah balik ----
+  //
+  // Nama sheet dinas dipotong 31 karakter dan tidak memuat kode SKPD, jadi tidak
+  // bisa dipetakan balik ke dinasnya. Mengurai teks judul dengan regex akan
+  // rapuh begitu judulnya diubah sedikit, karena itu pemetaannya ditulis eksplisit
+  // di sini. VERSI_META ikut ditulis supaya file asing atau file keluaran versi
+  // lama bisa ditolak dengan pesan yang jelas, bukan tersimpan diam-diam salah.
+  {
+    const ws = wb.addWorksheet('_META')
+    ws.state = 'veryHidden'
+    ws.addRow(['versi', VERSI_META])
+    ws.addRow(['tahun', Number(tahun)])
+    ws.addRow(['prefix', prefix])
+    ws.addRow(['bulan', bulanTerakhir || null])
+    ws.addRow([])
+    ws.addRow(['namaSheet', 'kodeSkpd', 'namaSkpd'])
+    for (const { nama, kodeSkpd, namaSkpd } of sheetInfo) {
+      ws.addRow([nama, kodeSkpd, namaSkpd])
+    }
   }
 
   return wb.xlsx.writeBuffer()

@@ -6,6 +6,7 @@ import db from './src/db.js'
 
 // Drop all known tables in reverse dependency order
 const DROP_ORDER = [
+  'sim_gaji',
   'dokumen_realisasi',
   'anggaran_rekap',
   'subkegiatan_pmk',

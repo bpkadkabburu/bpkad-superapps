@@ -3,6 +3,7 @@ import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { klausaAwalanRekening, subRincianRekening } from '../utils/kodeRekening.js'
 import { hitungProyeksiAkhir } from '../utils/proyeksiAkhir.js'
+import { ambilSimGaji } from '../utils/simGaji.js'
 
 const router = new Hono()
 router.use('*', requireAuth)
@@ -28,6 +29,32 @@ function median(values) {
 
 const num = (v) => Number(v) || 0
 
+// Ringkasan pembanding SIM Gaji untuk sekumpulan baris yang sudah punya kolom
+// sim & rataRataBanding. Hanya baris yang SUDAH diisi yang ikut dijumlahkan, di
+// kedua sisi sekaligus — kalau rekening yang belum diisi ikut menyusun sisi
+// rumus, deviasinya akan terbaca seolah rumusnya meleset padahal isiannya yang
+// belum lengkap.
+function ringkasSim(rows, bulanSisa) {
+  const terisi = (rows || []).filter(r => r.sim != null)
+  if (!terisi.length) {
+    return {
+      sim: null, rataRataBanding: null, selisihSim: null, deviasiSim: null,
+      proyeksiSim: null, proyeksiBanding: null, rekeningSim: 0,
+    }
+  }
+  const sim = terisi.reduce((a, r) => a + r.sim, 0)
+  const banding = terisi.reduce((a, r) => a + r.rataRataBanding, 0)
+  return {
+    sim,
+    rataRataBanding: banding,
+    selisihSim: sim - banding,
+    deviasiSim: banding > 0 ? sim / banding - 1 : null,
+    proyeksiSim: sim * bulanSisa,
+    proyeksiBanding: banding * bulanSisa,
+    rekeningSim: terisi.length,
+  }
+}
+
 // Baris dianggap sudah cair kalau nomor SP2D-nya terisi sungguhan. Dipakai di
 // semua query di berkas ini supaya definisinya tidak sempat menyimpang.
 const SP2D_SAH = "nomor_sp2d IS NOT NULL AND LOWER(TRIM(nomor_sp2d)) NOT IN ('', 'null', '-')"
@@ -43,12 +70,22 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
   // 'tertinggi' : nilai sekali bayar yang paling tinggi — dipakai kalau ingin
   //               berjaga-jaga terhadap kemungkinan gaji naik di sisa tahun.
   const basis = basisRaw === 'tertinggi' ? 'tertinggi' : 'rata'
-  const kosong = { prefix, basis, skpd: [], rekening: [], bulanList: [], totals: { pagu: 0, spp: 0, sp2d: 0 } }
+  const kosong = {
+    prefix, basis, skpd: [], rekening: [], bulanList: [],
+    simInfo: { bulan: null, updatedAt: null, jumlah: 0, dinas: 0 },
+    totals: { pagu: 0, spp: 0, sp2d: 0 },
+  }
   if (!tahun) return kosong
 
   const [taRows] = await db.query('SELECT id FROM tahun_anggaran WHERE tahun = ?', [tahun])
   const tahun_id = taRows[0]?.id
   if (!tahun_id) return kosong
+
+  // Nilai SIM Gaji yang diketik manual. Perannya murni PEMBANDING: tidak satu
+  // pun angka di bawah ini berubah karena tabelnya terisi — yang bertambah cuma
+  // kolom sim*/deviasiSim, supaya kelihatan seberapa jauh tebakan dari realisasi
+  // meleset dari angka yang sebenarnya dibayarkan.
+  const sim = await ambilSimGaji(tahun_id)
 
   // Awalan dicocokkan dalam semua varian lebar digit, jadi 5.1.01.01.001 tetap
   // kena untuk data 2024–2025 yang formatnya 5.1.01.01.01.
@@ -254,6 +291,15 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
 
           const perBulanRutinRek = basis === 'tertinggi' ? tertinggi : rataRata
           const proyeksiRek = perBulanRutinRek * bulanSisa
+
+          // Pembandingnya rataRata, bukan perBulanRutin: rataRata = sp2d ÷
+          // dibayar adalah "nilai satu kali bayar", satuan yang sama dengan
+          // kolom "Sim Gaji /Bln". perBulanRutin ikut berubah kalau pemakai
+          // menggeser basis rata/tertinggi, jadi tidak layak jadi patokan tetap.
+          const entriSim = sim.peta.get(`${s.kodeSkpd}|${r.kodeRekening}`)
+          const nilaiSim = entriSim ? entriSim.nilai : null
+          const adaSim = nilaiSim != null && nilaiSim > 0
+
           return {
             ...r,
             // Segmen sub rincian objek memisahkan golongan pegawai (…00001 = PNS,
@@ -277,6 +323,15 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
             perBulanRutin: perBulanRutinRek,
             proyeksi: proyeksiRek,
             selisih: (r.pagu - r.sp2d) - proyeksiRek,
+            // null = belum diisi. Sengaja bukan 0: rekening yang belum diisi
+            // kalau dianggap nol akan tampil sebagai selisih -100%.
+            sim: adaSim ? nilaiSim : null,
+            simRincian: entriSim ? entriSim.rincian : null,
+            rataRataBanding: adaSim ? rataRata : null,
+            selisihSim: adaSim ? nilaiSim - rataRata : null,
+            deviasiSim: adaSim && rataRata > 0 ? nilaiSim / rataRata - 1 : null,
+            proyeksiSim: adaSim ? nilaiSim * bulanSisa : null,
+            proyeksiBanding: adaSim ? rataRata * bulanSisa : null,
           }
         })
         .sort((a, b) => String(a.kodeRekening).localeCompare(String(b.kodeRekening), 'id', { numeric: true }))
@@ -320,6 +375,9 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
         sp2dTerakhir,
         proyeksi,
         selisih: (s.pagu - s.sp2d) - proyeksi,
+        // Disusun dari rekening ke atas seperti perBulanRutin di atasnya, jadi
+        // Σ rekening = angka dinas persis.
+        ...ringkasSim(rekening, bulanSisa),
         rekening,
       }
     })
@@ -336,6 +394,9 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
   )
   totals.sisa = totals.pagu - totals.sp2d
   totals.selisih = totals.sisa - totals.proyeksi
+  // Baris dinas sudah memuat sim & rataRataBanding hasil ringkasSim, jadi aturan
+  // yang sama berlaku lagi satu tingkat di atasnya tanpa dihitung ulang.
+  Object.assign(totals, ringkasSim(skpd, bulanSisa))
 
   const totalPerBulan = bulanList.map(b => skpd.reduce((a, s) => a + (s.perBulan[b] || 0), 0))
   const medianTotal = median(totalPerBulan)
@@ -363,6 +424,8 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
           // kekurangan per dinas dihitung terpisah dan tidak disaling-hapuskan.
           dinasKurang: 0, kekurangan: 0, daftarKurang: [],
           perBulanRutin: 0, rataRata: 0, tertinggi: 0, rataAkhir: 0, proyeksi: 0,
+          // baris per dinas, dipakai ringkasSim lalu dibuang dari payload
+          barisSim: [],
         }
         rekeningMap.set(r.kodeRekening, g)
       }
@@ -374,6 +437,7 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
       g.tertinggi += r.tertinggi
       g.rataAkhir += r.rataAkhir
       g.proyeksi += r.proyeksi
+      g.barisSim.push(r)
       if (r.selisih < 0) {
         g.dinasKurang += 1
         g.kekurangan += r.selisih
@@ -388,8 +452,9 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
     g.daftarKurang.sort((a, b) => a.selisih - b.selisih)
   }
   const rekening = Array.from(rekeningMap.values())
-    .map(r => ({
+    .map(({ barisSim, ...r }) => ({
       ...r,
+      ...ringkasSim(barisSim, bulanSisa),
       sisa: r.pagu - r.sp2d,
       // Berapa kali rekening ini dibayar sekabupaten — inilah angka yang
       // membedakan gaji pokok (ikut THR & gaji ke-13) dari iuran BPJS.
@@ -410,6 +475,15 @@ export async function hitungProyeksiGaji({ tahun, prefix: prefixRaw, basis: basi
     medianTotal,
     totalPerBulan,
     totals,
+    // Keterangan asal isian SIM Gaji — dipakai layar & Excel untuk memberi tahu
+    // dari bulan berapa angkanya dan berapa dinas yang sudah terisi.
+    simInfo: {
+      bulan: sim.bulan,
+      updatedAt: sim.updatedAt,
+      jumlah: sim.jumlah,
+      dinas: skpd.filter(s => s.sim != null).length,
+      totalDinas: skpd.length,
+    },
     skpd,
     rekening,
   }

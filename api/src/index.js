@@ -18,6 +18,7 @@ import rekapPerSumberDanaRoutes from './routes/rekapPerSumberDana.js'
 import perbupApbdRoutes from './routes/perbupApbd.js'
 import efisiensiRoutes from './routes/efisiensi.js'
 import proyeksiGajiRoutes from './routes/proyeksiGaji.js'
+import simGajiRoutes from './routes/simGaji.js'
 import apiKeysRoutes from './routes/apiKeys.js'
 import syncRoutes from './routes/sync.js'
 import mappingRoutes from './routes/mapping.js'
@@ -48,6 +49,7 @@ app.route('/api/rekap-per-sumber-dana', rekapPerSumberDanaRoutes)
 app.route('/api/perbup-apbd', perbupApbdRoutes)
 app.route('/api/efisiensi', efisiensiRoutes)
 app.route('/api/proyeksi-gaji', proyeksiGajiRoutes)
+app.route('/api/sim-gaji', simGajiRoutes)
 app.route('/api/mapping-pmk', mappingRoutes)
 
 serve({ fetch: app.fetch, port: 3001 }, () => {

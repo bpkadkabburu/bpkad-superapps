@@ -12,7 +12,8 @@
     "uji:proyeksi-gaji": "node scripts/uji-proyeksi-gaji.mjs",
     "uji:proyeksi-akhir": "node scripts/uji-proyeksi-akhir.mjs",
     "uji:dokumen-realisasi": "node scripts/uji-dokumen-realisasi.mjs",
-    "uji:kode-rekening": "node scripts/uji-kode-rekening.mjs"
+    "uji:kode-rekening": "node scripts/uji-kode-rekening.mjs",
+    "uji:sim-gaji": "node scripts/uji-sim-gaji.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

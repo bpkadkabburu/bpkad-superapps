@@ -1,10 +1,11 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { Download, Refresh, WarningFilled } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { Download, Refresh, Upload, WarningFilled } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../utils/api.js'
 import { buatWorkbookProyeksiGaji, namaFileProyeksiGaji } from '../utils/proyeksiGajiExcel.js'
+import { bacaSimGajiDariWorkbook, BerkasTidakDikenal } from '../utils/proyeksiGajiImport.js'
 
 const route = useRoute()
 const tahun = computed(() => route.params.tahun)
@@ -213,6 +214,190 @@ const labelBasis = computed(() => akhir.value.basis === 'tertinggi' ? 'Tertinggi
 const skpdTrenNaik = computed(() =>
   (akhir.value.skpd || []).filter(s => s.tren > 1.01).sort((a, b) => b.tren - a.tren))
 
+// ---- Sim Gaji: unggah balik file yang sudah diisi ----
+//
+// Bulan tidak pernah ditanyakan: file export mencantumkan bulan realisasi
+// terakhir saat ia dibuat, dan angka SIM Gaji selalu berasal dari bulan itu.
+const mengimpor = ref(false)
+
+async function handleImportSim(uploadFile) {
+  if (!uploadFile?.raw) return false
+  mengimpor.value = true
+  try {
+    const hasil = await bacaSimGajiDariWorkbook(uploadFile.raw)
+
+    if (String(hasil.tahun) !== String(tahun.value)) {
+      ElMessage.error(`File ini untuk TA ${hasil.tahun}, sedangkan yang sedang dibuka TA ${tahun.value}.`)
+      return false
+    }
+    if (!hasil.rows.length) {
+      ElMessage.warning('Tidak ada kolom "Sim Gaji /Bln" yang terisi di file itu.')
+      return false
+    }
+
+    // Isian dinas yang ada di file akan menimpa yang tersimpan, jadi pemakai
+    // diberi tahu dulu berapa yang terpengaruh sebelum data lama tertindih.
+    try {
+      await ElMessageBox.confirm(
+        `${hasil.dinasTerisi} dinas terisi (${hasil.rows.length} baris), Sim Gaji bulan ` +
+        `${NAMA_BULAN[hasil.bulan]}. Isian tersimpan untuk dinas-dinas itu akan diganti. Lanjutkan?`,
+        'Simpan isian Sim Gaji',
+        { confirmButtonText: 'Ya, simpan', cancelButtonText: 'Batal', type: 'warning' }
+      )
+    } catch { return false }
+
+    const res = await api.post('/sim-gaji', {
+      tahun: tahun.value, bulan: hasil.bulan, data: hasil.rows,
+    })
+    ElMessage.success(`Tersimpan — ${res.data.count} baris dari ${res.data.dinas} dinas.`)
+    await load()
+    tab.value = 'banding'
+  } catch (e) {
+    if (e instanceof BerkasTidakDikenal) ElMessage.error(e.message)
+    else ElMessage.error(e?.response?.data?.error || 'Gagal membaca file: ' + (e?.message || e))
+  } finally {
+    mengimpor.value = false
+  }
+  return false
+}
+
+// ---- Tab pembanding ----
+const simInfo = computed(() => data.value.simInfo || { bulan: null, dinas: 0, totalDinas: 0, jumlah: 0 })
+const adaSim = computed(() => simInfo.value.jumlah > 0)
+// Isian dari bulan yang lebih tua dari realisasi terakhir berarti sudah
+// tertinggal — angkanya masih boleh dipakai, tapi pemakai harus tahu.
+const simTertinggal = computed(() =>
+  adaSim.value && simInfo.value.bulan && data.value.bulanTerakhir &&
+  simInfo.value.bulan < data.value.bulanTerakhir)
+
+const AMBANG_SEPELE = 0.02
+const sembunyikanSepele = ref(true)
+
+// Angka dinas dan angka total di tab ini disusun ulang di sini, bukan dipakai
+// apa adanya dari server. Sel yang baru saja diedit belum ikut terhitung di
+// server, dan kalau angka di atasnya tidak ikut bergerak, tabelnya jadi tampak
+// bertentangan dengan dirinya sendiri. Aturannya sama persis dengan ringkasSim()
+// di API: yang dijumlahkan hanya rekening yang sudah diisi, di KEDUA sisi
+// sekaligus — kalau sisi rumus ikut menghitung rekening yang belum diisi,
+// deviasinya terbaca seolah rumusnya meleset padahal isiannya yang belum lengkap.
+function ringkasBanding(rekening) {
+  const terisi = (rekening || []).filter(r => r.sim != null)
+  if (!terisi.length) {
+    return {
+      sim: null, rataRataBanding: null, selisihSim: null, deviasiSim: null,
+      proyeksiSim: null, proyeksiBanding: null, rekeningSim: 0,
+    }
+  }
+  const sim = terisi.reduce((a, r) => a + r.sim, 0)
+  const banding = terisi.reduce((a, r) => a + r.rataRata, 0)
+  const sisa = data.value.bulanSisa || 0
+  return {
+    sim,
+    rataRataBanding: banding,
+    selisihSim: sim - banding,
+    deviasiSim: banding > 0 ? sim / banding - 1 : null,
+    proyeksiSim: sim * sisa,
+    proyeksiBanding: banding * sisa,
+    rekeningSim: terisi.length,
+  }
+}
+
+// `rekening` sengaja tidak ikut disalin isinya — array-nya tetap menunjuk objek
+// yang sama, jadi mengubah satu sel langsung terlihat sampai ke baris dinas.
+const dinasBanding = computed(() =>
+  rows.value
+    .map(s => ({ ...s, ...ringkasBanding(s.rekening) }))
+    .filter(s => s.sim != null))
+
+const totalBanding = computed(() =>
+  ringkasBanding(dinasBanding.value.flatMap(s => s.rekening || [])))
+
+const barisBanding = computed(() => {
+  if (!sembunyikanSepele.value) return dinasBanding.value
+  return dinasBanding.value.filter(s => Math.abs(s.deviasiSim ?? 0) >= AMBANG_SEPELE)
+})
+
+function rekeningBanding(row) {
+  const daftar = (row.rekening || []).filter(r => r.sim != null)
+  if (!sembunyikanSepele.value) return daftar
+  return daftar.filter(r => Math.abs(r.deviasiSim ?? 0) >= AMBANG_SEPELE)
+}
+
+// Isian Sim Gaji nilainya jutaan — tanpa pemisah ribuan, salah ketik satu digit
+// tidak akan kelihatan. Ditulis balik bertitik saat sel tidak sedang diketik.
+function formatIsian(val) {
+  if (val == null || val === '') return ''
+  return Number(val).toLocaleString('id-ID', { maximumFractionDigits: 0 })
+}
+function uraiIsian(teks) {
+  return String(teks ?? '').replace(/[^\d]/g, '')
+}
+
+// Kebutuhan sampai akhir tahun: versi rumus vs versi Sim Gaji. Inilah angka yang
+// benar-benar dipakai menyusun anggaran, jadi selisihnya ditampilkan tersendiri
+// dan tidak dibiarkan harus dikurangkan sendiri oleh pembacanya.
+function selisihKebutuhan(row) {
+  if (row.proyeksiSim == null || row.proyeksiBanding == null) return null
+  return row.proyeksiSim - row.proyeksiBanding
+}
+
+function formatDeviasi(val) {
+  if (val == null) return '\u2014'
+  const n = Number(val) * 100
+  return (n > 0 ? '+' : n < 0 ? '\u2212' : '') +
+    Math.abs(n).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + '%'
+}
+function warnaDeviasi(val) {
+  const n = Math.abs(Number(val) || 0)
+  if (n > 0.05) return '#f56c6c'
+  if (n >= 0.02) return '#e6a23c'
+  return '#67c23a'
+}
+function kelasBarisBanding({ row }) {
+  const n = Math.abs(Number(row.deviasiSim) || 0)
+  if (n > 0.05) return 'baris-kurang'
+  return ''
+}
+
+// Menyimpan satu sel: nilai diperbarui di tempat, bukan lewat load() penuh,
+// supaya tabel tidak melompat dan fokus ketikan tidak hilang.
+async function simpanSel(skpd, rek, nilai) {
+  const sebelum = rek.sim
+  try {
+    await api.put('/sim-gaji/baris', {
+      tahun: tahun.value,
+      bulan: simInfo.value.bulan || data.value.bulanTerakhir,
+      kodeSkpd: skpd.kodeSkpd, namaSkpd: skpd.namaSkpd,
+      kodeRekening: rek.kodeRekening, namaRekening: rek.namaRekening,
+      komponen: '', nilai,
+    })
+    rek.sim = nilai || null
+    rek.selisihSim = rek.sim == null ? null : rek.sim - rek.rataRata
+    rek.deviasiSim = rek.sim == null || !rek.rataRata ? null : rek.sim / rek.rataRata - 1
+    rek.proyeksiSim = rek.sim == null ? null : rek.sim * (data.value.bulanSisa || 0)
+  } catch (e) {
+    rek.sim = sebelum
+    ElMessage.error(e?.response?.data?.error || 'Gagal menyimpan')
+  }
+}
+
+async function hapusSimGaji() {
+  try {
+    await ElMessageBox.confirm(
+      'Seluruh isian Sim Gaji tahun ini akan dihapus. Angka proyeksi tidak terpengaruh.',
+      'Hapus isian Sim Gaji',
+      { confirmButtonText: 'Ya, hapus', cancelButtonText: 'Batal', type: 'warning' }
+    )
+  } catch { return }
+  try {
+    await api.delete(`/sim-gaji?tahun=${tahun.value}`)
+    ElMessage.success('Isian Sim Gaji dihapus')
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.error || 'Gagal menghapus')
+  }
+}
+
 async function exportExcel() {
   if (!rows.value.length) {
     ElMessage.warning('Tidak ada data untuk diekspor')
@@ -259,9 +444,14 @@ async function exportExcel() {
         <span style="font-size: 12px; color: #909399;">
           default <strong>5.1.01.01</strong> = Belanja Gaji dan Tunjangan ASN
         </span>
-        <el-button type="primary" :icon="Download" :loading="exporting" @click="exportExcel" style="margin-left: auto;">
-          Export Excel
-        </el-button>
+        <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+          <el-upload :auto-upload="false" :show-file-list="false" accept=".xlsx" :on-change="handleImportSim">
+            <el-button :icon="Upload" :loading="mengimpor">Import Sim Gaji</el-button>
+          </el-upload>
+          <el-button type="primary" :icon="Download" :loading="exporting" @click="exportExcel">
+            Export Excel
+          </el-button>
+        </div>
       </div>
       <div style="margin-top: 10px; font-size: 12px; color: #909399;">
         File Excel berisi 1 sheet per dinas (rekening urut kode) + sheet REKAP, PER BULAN, REKAP REKENING,
@@ -1055,6 +1245,221 @@ async function exportExcel() {
           </el-table-column>
         </el-table>
       </el-tab-pane>
+
+      <el-tab-pane name="banding">
+        <template #label>
+          Banding Sim Gaji
+          <el-badge v-if="adaSim" :value="dinasBanding.length" type="primary" class="lencana-sim" />
+        </template>
+
+        <el-alert v-if="!adaSim" type="info" :closable="false" show-icon
+          title="Belum ada isian Sim Gaji"
+          style="margin-bottom: 16px;">
+          <div style="font-size: 12px; line-height: 1.7;">
+            Export Excel dulu, isi kolom kuning <strong>Sim Gaji /Bln</strong> di sheet tiap dinas dari aplikasi
+            SIM Gaji, lalu unggah kembali filenya lewat tombol <strong>Import Sim Gaji</strong> di atas.
+            Bulannya ikut file &mdash; tidak perlu dipilih.
+            Angka proyeksi di tab lain tidak berubah karena isian ini; gunanya murni untuk membandingkan.
+          </div>
+        </el-alert>
+
+        <template v-else>
+          <el-alert v-if="simTertinggal" type="warning" :closable="false" show-icon
+            style="margin-bottom: 16px;"
+            :title="`Isian Sim Gaji dari bulan ${NAMA_BULAN[simInfo.bulan]}, sedangkan realisasi sudah sampai ${NAMA_BULAN[data.bulanTerakhir]}`">
+            <div style="font-size: 12px;">
+              Perbandingannya masih terbaca, tapi selisihnya bisa berasal dari kenaikan gaji yang belum ikut terisi.
+              Export ulang lalu isi lagi kalau ingin angkanya sebanding.
+            </div>
+          </el-alert>
+
+          <el-card v-loading="loading" style="margin-bottom: 16px;">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 16px;">
+              <div>
+                <div style="font-size: 12px; color: #909399; font-weight: 600;">Rata&sup2;/Bln (Rumus)</div>
+                <div style="font-size: 19px; font-weight: 700;">{{ formatMio(totalBanding.rataRataBanding) }}</div>
+                <div style="font-size: 11px; color: #909399;">dari realisasi SP2D</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; color: #409eff; font-weight: 600;">Sim Gaji /Bln</div>
+                <div style="font-size: 19px; font-weight: 700;">{{ formatMio(totalBanding.sim) }}</div>
+                <div style="font-size: 11px; color: #909399;">
+                  {{ NAMA_BULAN[simInfo.bulan] }} &bull; {{ dinasBanding.length }}/{{ simInfo.totalDinas }} dinas
+                </div>
+              </div>
+              <div>
+                <div style="font-size: 12px; font-weight: 600;" :style="{ color: warnaDeviasi(totalBanding.deviasiSim) }">
+                  Selisih /Bln
+                </div>
+                <div style="font-size: 19px; font-weight: 700;" :style="{ color: warnaDeviasi(totalBanding.deviasiSim) }">
+                  {{ formatSelisih(totalBanding.selisihSim) }}
+                </div>
+                <div style="font-size: 11px; font-weight: 600;" :style="{ color: warnaDeviasi(totalBanding.deviasiSim) }">
+                  {{ formatDeviasi(totalBanding.deviasiSim) }}
+                </div>
+              </div>
+              <div>
+                <div style="font-size: 12px; color: #909399; font-weight: 600;">
+                  Kebutuhan {{ data.bulanSisa }} Bln (Rumus)
+                </div>
+                <div style="font-size: 19px; font-weight: 700;">{{ formatMio(totalBanding.proyeksiBanding) }}</div>
+                <div style="font-size: 11px; color: #909399;">{{ rentangSisa }}</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; color: #409eff; font-weight: 600;">
+                  Kebutuhan {{ data.bulanSisa }} Bln (Sim Gaji)
+                </div>
+                <div style="font-size: 19px; font-weight: 700;">{{ formatMio(totalBanding.proyeksiSim) }}</div>
+                <div style="font-size: 11px; color: #909399;">{{ rentangSisa }}</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; font-weight: 600;" :style="{ color: warnaDeviasi(totalBanding.deviasiSim) }">
+                  Selisih Kebutuhan
+                </div>
+                <div style="font-size: 19px; font-weight: 700;" :style="{ color: warnaDeviasi(totalBanding.deviasiSim) }">
+                  {{ formatSelisih(selisihKebutuhan(totalBanding)) }}
+                </div>
+                <div style="font-size: 11px; color: #909399;">
+                  {{ totalBanding.rekeningSim }} rekening dibanding
+                </div>
+              </div>
+            </div>
+
+            <div style="margin-top: 12px; font-size: 12px; color: #909399; line-height: 1.7;">
+              Yang dibandingkan hanya rekening yang kolom Sim Gaji-nya sudah diisi &mdash; di kedua sisi sekaligus,
+              supaya rekening yang belum diisi tidak terbaca seolah rumusnya meleset.
+              Deviasi <strong>positif</strong> berarti rumusnya <strong>kerendahan</strong>: kebutuhan sebenarnya
+              lebih besar dari yang diproyeksikan.
+            </div>
+          </el-card>
+
+          <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 12px;">
+            <el-switch v-model="sembunyikanSepele" />
+            <span style="font-size: 12px; color: #606266;">Sembunyikan yang selisihnya di bawah 2%</span>
+            <el-button link type="danger" size="small" style="margin-left: auto;" @click="hapusSimGaji">
+              Hapus isian Sim Gaji
+            </el-button>
+          </div>
+
+          <el-alert v-if="!barisBanding.length" type="success" :closable="false" show-icon
+            title="Tidak ada dinas yang selisihnya di atas 2%"
+            style="margin-bottom: 16px;">
+            <div style="font-size: 12px;">
+              Untuk isian yang ada sekarang, proyeksi berbasis realisasi sudah sejalan dengan angka SIM Gaji.
+              Matikan saklar di atas untuk melihat seluruh dinas.
+            </div>
+          </el-alert>
+
+          <el-table v-else v-loading="loading" :data="barisBanding" size="small" stripe
+            row-key="kodeSkpd" :row-class-name="kelasBarisBanding" class="tabel-rapat"
+            style="width: 100%;" max-height="620">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div style="padding: 8px 16px 16px 48px; background: #fafcff;">
+                  <el-table :data="rekeningBanding(row)" size="small" style="width: 100%;"
+                    class="tabel-rapat" :row-class-name="kelasBarisBanding">
+                    <el-table-column label="Kode Rek" width="140">
+                      <template #default="{ row: r }">
+                        <span style="font-family: monospace; font-size: 11px;" :title="r.kodeRekening">
+                          {{ kodeSingkat(r.kodeRekening) }}
+                        </span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="namaRekening" label="Nama Rekening" min-width="220" show-overflow-tooltip />
+                    <el-table-column label="Rata&sup2;/Bln (Rumus)" width="150" align="right">
+                      <template #default="{ row: r }">
+                        <span style="font-variant-numeric: tabular-nums;">{{ formatRp(r.rataRata) }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="Sim Gaji /Bln" width="180" align="right">
+                      <template #default="{ row: r }">
+                        <el-input-number :model-value="r.sim" size="small" :controls="false" :min="0" :step="100000"
+                          style="width: 160px;"
+                          :formatter="formatIsian" :parser="uraiIsian"
+                          @change="(v) => simpanSel(row, r, v)" />
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="Selisih /Bln" width="135" align="right">
+                      <template #default="{ row: r }">
+                        <span style="font-variant-numeric: tabular-nums;" :style="{ color: warnaDeviasi(r.deviasiSim) }">
+                          {{ formatSelisih(r.selisihSim) }}
+                        </span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="Deviasi" width="90" align="center">
+                      <template #default="{ row: r }">
+                        <strong :style="{ color: warnaDeviasi(r.deviasiSim) }">{{ formatDeviasi(r.deviasiSim) }}</strong>
+                      </template>
+                    </el-table-column>
+                    <el-table-column :label="`Kebutuhan ${data.bulanSisa} Bln (Rumus)`" width="145" align="right">
+                      <template #default="{ row: r }">
+                        <span style="font-variant-numeric: tabular-nums;">{{ formatRp(r.proyeksiBanding) }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column :label="`Kebutuhan ${data.bulanSisa} Bln (Sim Gaji)`" width="145" align="right">
+                      <template #default="{ row: r }">
+                        <span style="font-variant-numeric: tabular-nums; font-weight: 600;">{{ formatRp(r.proyeksiSim) }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="Selisih Kebutuhan" width="150" align="right">
+                      <template #default="{ row: r }">
+                        <span style="font-variant-numeric: tabular-nums;" :style="{ color: warnaDeviasi(r.deviasiSim) }">
+                          {{ formatSelisih(selisihKebutuhan(r)) }}
+                        </span>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="Nama SKPD" prop="namaSkpd" min-width="260" show-overflow-tooltip sortable />
+            <el-table-column label="Rek Terisi" prop="rekeningSim" width="100" align="center" sortable />
+            <el-table-column label="Rata&sup2;/Bln (Rumus)" prop="rataRataBanding" min-width="150" align="right" sortable>
+              <template #default="{ row }">
+                <span style="font-variant-numeric: tabular-nums;">{{ formatRp(row.rataRataBanding) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="Sim Gaji /Bln" prop="sim" min-width="150" align="right" sortable>
+              <template #default="{ row }">
+                <span style="font-variant-numeric: tabular-nums;">{{ formatRp(row.sim) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="Selisih /Bln" prop="selisihSim" min-width="135" align="right" sortable>
+              <template #default="{ row }">
+                <span style="font-variant-numeric: tabular-nums;" :style="{ color: warnaDeviasi(row.deviasiSim) }">
+                  {{ formatSelisih(row.selisihSim) }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="Deviasi" prop="deviasiSim" width="95" align="center" sortable>
+              <template #default="{ row }">
+                <strong :style="{ color: warnaDeviasi(row.deviasiSim) }">{{ formatDeviasi(row.deviasiSim) }}</strong>
+              </template>
+            </el-table-column>
+            <el-table-column :label="`Kebutuhan ${data.bulanSisa} Bln (Rumus)`" prop="proyeksiBanding"
+              min-width="145" align="right" sortable>
+              <template #default="{ row }">
+                <span style="font-variant-numeric: tabular-nums;">{{ formatRp(row.proyeksiBanding) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="`Kebutuhan ${data.bulanSisa} Bln (Sim Gaji)`" prop="proyeksiSim"
+              min-width="145" align="right" sortable>
+              <template #default="{ row }">
+                <span style="font-variant-numeric: tabular-nums; font-weight: 600;">{{ formatRp(row.proyeksiSim) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="Selisih Kebutuhan" min-width="155" align="right">
+              <template #default="{ row }">
+                <span style="font-variant-numeric: tabular-nums;" :style="{ color: warnaDeviasi(row.deviasiSim) }">
+                  {{ formatSelisih(selisihKebutuhan(row)) }}
+                </span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </template>
+      </el-tab-pane>
+
     </el-tabs>
   </div>
 </template>
@@ -1084,6 +1489,12 @@ async function exportExcel() {
 }
 .tab-proyeksi :deep(.el-tabs__item) {
   font-weight: 600;
+}
+
+/* Lencana jumlah dinas yang sudah terisi Sim Gaji, di label tab. */
+.lencana-sim {
+  margin-left: 6px;
+  vertical-align: middle;
 }
 
 /* Padding sel bawaan Element Plus boros untuk tabel berkolom banyak. Dirapatkan

@@ -16,7 +16,7 @@ import ExcelJS from 'exceljs'
 import db from '../src/db.js'
 import { hitungProyeksiGaji } from '../src/routes/proyeksiGaji.js'
 import { hitungProyeksiAkhir } from '../src/utils/proyeksiAkhir.js'
-import { buatWorkbookProyeksiGaji, namaFileProyeksiGaji } from '../../src/utils/proyeksiGajiExcel.js'
+import { buatWorkbookProyeksiGaji, namaFileProyeksiGaji, VERSI_META } from '../../src/utils/proyeksiGajiExcel.js'
 
 const TAHUN = Number(process.argv[2]) || new Date().getFullYear()
 const PREFIX = process.argv[3] || '5.1.01.01'
@@ -217,7 +217,8 @@ await wb.xlsx.readFile(berkas)
 const nama = wb.worksheets.map(w => w.name)
 
 cek('file bisa dibaca ulang', wb.worksheets.length > 0)
-cek('jumlah sheet = 5 + jumlah SKPD', wb.worksheets.length === data.skpd.length + 5,
+// 5 sheet ringkasan + 1 sheet _META (penanda supaya file bisa diunggah balik).
+cek('jumlah sheet = 6 + jumlah SKPD', wb.worksheets.length === data.skpd.length + 6,
   `${wb.worksheets.length} sheet`)
 cek('sheet pertama = REKAP', nama[0] === 'REKAP')
 cek('ada sheet PER BULAN & REKAP REKENING',
@@ -227,6 +228,52 @@ cek('ada sheet PROYEKSI AKHIR & AKHIR REKENING',
 cek('nama sheet unik', nama.length === new Set(nama).size)
 cek('nama sheet ≤ 31 karakter', nama.every(n => n.length <= 31))
 cek('nama sheet tanpa karakter ilegal', nama.every(n => !/[\\/?*[\]:]/.test(n)))
+
+// ---- Sheet _META: dipakai saat file diisi lalu diunggah balik ----
+{
+  const meta = wb.getWorksheet('_META')
+  cek('ada sheet _META', !!meta)
+  cek('_META disembunyikan dari pemakai', meta?.state === 'veryHidden', meta?.state)
+  const baca = (baris) => meta?.getRow(baris).getCell(2).value
+  cek('_META memuat versi, tahun & bulan',
+    baca(1) === VERSI_META && baca(2) === Number(TAHUN) && baca(4) === data.bulanTerakhir,
+    `versi=${baca(1)} tahun=${baca(2)} bulan=${baca(4)}`)
+
+  // Inti gunanya: nama sheet (terpotong 31 karakter) harus bisa dipetakan balik
+  // ke kode SKPD-nya, kalau tidak isian Sim Gaji bisa masuk ke dinas yang salah.
+  const peta = new Map()
+  meta?.eachRow((row, i) => {
+    if (i <= 6) return
+    peta.set(String(row.getCell(1).value), String(row.getCell(2).value))
+  })
+  cek('_META memetakan semua sheet dinas', peta.size === data.skpd.length, `${peta.size} dinas`)
+  cek('tiap sheet dinas ketemu di _META',
+    wb.worksheets.slice(1, 1 + data.skpd.length).every(ws => peta.has(ws.name)))
+  cek('kode SKPD di _META cocok dengan payload',
+    data.skpd.every((s, i) => peta.get(wb.worksheets[i + 1].name) === String(s.kodeSkpd)))
+}
+
+// "Belum diisi" harus tetap null, tidak boleh jatuh jadi 0 — kalau jadi 0,
+// rekening yang belum diisi akan terbaca sebagai selisih -100% dan seluruh
+// rekap deviasinya jadi omong kosong.
+{
+  const semuaRek = data.skpd.flatMap(s => s.rekening || [])
+  const adaIsian = semuaRek.some(r => r.sim != null)
+  cek('dinas tanpa isian Sim Gaji bernilai null, bukan 0',
+    data.skpd.every(s => s.sim === null || s.rekening.some(r => r.sim != null)),
+    adaIsian ? `${data.skpd.filter(s => s.sim != null).length} dinas terisi` : 'tabel sim_gaji kosong')
+  cek('jumlah dinas terisi = jumlah yang punya rekening terisi',
+    data.skpd.filter(s => s.sim != null).length ===
+    data.skpd.filter(s => (s.rekening || []).some(r => r.sim != null)).length)
+  cek('simInfo.dinas cocok dengan isi payload',
+    (data.simInfo?.dinas ?? 0) === data.skpd.filter(s => s.sim != null).length,
+    `simInfo=${data.simInfo?.dinas} payload=${data.skpd.filter(s => s.sim != null).length}`)
+}
+
+// Sheet BANDING SIM hanya muncul kalau sudah ada isian Sim Gaji yang tersimpan.
+cek('BANDING SIM mengikuti ada/tidaknya isian Sim Gaji',
+  nama.includes('BANDING SIM') === data.skpd.some(s => (s.rekening || []).some(r => r.sim != null)),
+  data.simInfo?.jumlah ? `${data.simInfo.jumlah} baris tersimpan` : 'belum ada isian')
 
 const rekap = wb.getWorksheet('REKAP')
 const dinas1 = wb.worksheets[1]
