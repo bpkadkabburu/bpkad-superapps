@@ -3,7 +3,9 @@
 // hanya kode_sub_skpd — jadi kode_skpd/nama_skpd diambil dari peta anggaran/realisasi.
 
 // Baris realisasi AKLAP teragregasi per seluruh field hierarki (kecuali SKPD).
-export async function getAklapRealisasiRows(db, tahun_id) {
+// `extra` (opsional) = potongan WHERE tambahan dari route pemanggil, mis. filter
+// kode rekening: { sql: ' AND (...)', params: [...] }.
+export async function getAklapRealisasiRows(db, tahun_id, extra = { sql: '', params: [] }) {
   const [rows] = await db.query(
     `SELECT
        kode_sub_skpd, nama_sub_skpd,
@@ -15,12 +17,12 @@ export async function getAklapRealisasiRows(db, tahun_id) {
        kode_rekening, nama_rekening,
        SUM(nilai_realisasi) AS realisasi_aklap
      FROM dokumen_aklap
-     WHERE tahun_id = ?
+     WHERE tahun_id = ?${extra.sql || ''}
      GROUP BY kode_sub_skpd, nama_sub_skpd,
        kode_urusan, nama_urusan, kode_bidang_urusan, nama_bidang_urusan,
        kode_program, nama_program, kode_kegiatan, nama_kegiatan,
        kode_sub_kegiatan, nama_sub_kegiatan, kode_rekening, nama_rekening`,
-    [tahun_id]
+    [tahun_id, ...(extra.params || [])]
   )
   return rows
 }

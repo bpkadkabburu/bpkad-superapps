@@ -12,6 +12,7 @@
     "uji:proyeksi-gaji": "node scripts/uji-proyeksi-gaji.mjs",
     "uji:proyeksi-akhir": "node scripts/uji-proyeksi-akhir.mjs",
     "uji:dokumen-realisasi": "node scripts/uji-dokumen-realisasi.mjs",
+    "uji:rekap-realisasi": "node scripts/uji-rekap-realisasi.mjs",
     "uji:kode-rekening": "node scripts/uji-kode-rekening.mjs",
     "uji:sim-gaji": "node scripts/uji-sim-gaji.mjs"
   },

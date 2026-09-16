@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import ExcelJS from 'exceljs'
-import { Upload, Delete, Search, Refresh, Grid, Tickets } from '@element-plus/icons-vue'
+import { Upload, Download, Delete, Search, Refresh, Grid, Tickets } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../utils/api.js'
 
@@ -33,7 +33,7 @@ const PINTASAN_TANGGAL = [
 // Filter aktif — dipakai bersama oleh matriks kelengkapan, rekap rekening, dan
 // daftar dokumen. tanggal = [dari, sampai] dalam 'YYYY-MM-DD', boleh kosong.
 const FILTER_KOSONG = () => ({
-  kodeSkpd: '', bulan: null, kodeRekening: '', jenisDokumen: '', sp2d: '', q: '', tanggal: null,
+  kodeSubSkpd: '', bulan: null, kodeRekening: '', jenisDokumen: '', sp2d: '', q: '', tanggal: null,
 })
 const filter = ref(FILTER_KOSONG())
 
@@ -59,10 +59,11 @@ const tampilkanRekap = ref(true)
 const tampilkanTanpaRealisasi = ref(false)
 
 const bulanImport = ref(null)
+const loadingEkspor = ref(false)
 
 function paramsFilter() {
   const p = { tahun: tahun.value }
-  if (filter.value.kodeSkpd) p.kodeSkpd = filter.value.kodeSkpd
+  if (filter.value.kodeSubSkpd) p.kodeSubSkpd = filter.value.kodeSubSkpd
   if (filter.value.bulan) p.bulan = filter.value.bulan
   if (filter.value.kodeRekening) p.kodeRekening = filter.value.kodeRekening
   if (filter.value.jenisDokumen) p.jenisDokumen = filter.value.jenisDokumen
@@ -104,7 +105,7 @@ async function loadMatriks() {
   loadingMatriks.value = true
   try {
     const p = { tahun: tahun.value }
-    if (filter.value.kodeSkpd) p.kodeSkpd = filter.value.kodeSkpd
+    if (filter.value.kodeSubSkpd) p.kodeSubSkpd = filter.value.kodeSubSkpd
     if (filter.value.kodeRekening) p.kodeRekening = filter.value.kodeRekening
     if (filter.value.jenisDokumen) p.jenisDokumen = filter.value.jenisDokumen
     if (filter.value.sp2d) p.sp2d = filter.value.sp2d
@@ -149,7 +150,7 @@ onMounted(loadSemua)
 // Perubahan filter: halaman kembali ke 1, matriks hanya dimuat ulang kalau filter
 // yang memengaruhinya berubah (bulan & pencarian bebas tidak).
 let timerCari = null
-watch(() => [filter.value.kodeSkpd, filter.value.kodeRekening, filter.value.jenisDokumen, filter.value.sp2d],
+watch(() => [filter.value.kodeSubSkpd, filter.value.kodeRekening, filter.value.jenisDokumen, filter.value.sp2d],
   () => { currentPage.value = 1; loadMatriks(); loadRekap(); loadTabel() })
 watch(() => filter.value.bulan, () => { currentPage.value = 1; loadRekap(); loadTabel() })
 watch(() => filter.value.tanggal,
@@ -162,7 +163,7 @@ watch([currentPage, pageSize], loadTabel)
 
 const adaFilter = computed(() => {
   const f = filter.value
-  return !!(f.kodeSkpd || f.bulan || f.kodeRekening || f.jenisDokumen || f.sp2d || f.q.trim()
+  return !!(f.kodeSubSkpd || f.bulan || f.kodeRekening || f.jenisDokumen || f.sp2d || f.q.trim()
     || f.tanggal?.[0] || f.tanggal?.[1])
 })
 function resetFilter() {
@@ -177,7 +178,7 @@ function gantiUrutan({ prop, order }) {
   loadTabel()
 }
 
-// Bulan yang diperiksa = bulan yang sudah ada datanya di minimal satu SKPD.
+// Bulan yang diperiksa = bulan yang sudah ada datanya di minimal satu unit.
 // Bulan yang memang belum diimport sama sekali tidak dihitung sebagai kekurangan.
 const bulanDiperiksa = computed(() => kelengkapan.value.bulanAda || [])
 
@@ -203,7 +204,7 @@ function klikSel(row, bulan) {
   // Bulan yang belum diimport sama sekali tidak bisa diklik — tidak ada yang
   // bisa ditampilkan, dan filternya cuma bikin tabel di bawah jadi kosong.
   if (!bulanDiperiksa.value.includes(bulan)) return
-  filter.value.kodeSkpd = row.kodeSkpd
+  filter.value.kodeSubSkpd = row.kodeSubSkpd
   filter.value.bulan = bulan
 }
 
@@ -336,6 +337,211 @@ async function handleFileImport(uploadFile) {
   return false
 }
 
+// ---------- Ekspor Excel ----------
+// Isinya mengikuti filter yang sedang aktif, bukan halaman yang sedang tampil:
+// daftar dokumen diambil ulang dari server tanpa paginasi, sedangkan rekap
+// rekening dan matriks kelengkapan dipakai apa adanya dari yang sudah dimuat.
+const NUM_FMT = '#,##0'
+const TGL_FMT = 'dd/mm/yyyy'
+
+// 'YYYY-MM-DD' -> Date untuk sel Excel. ExcelJS menghitung nomor seri tanggal
+// dari getTime() (UTC) apa adanya, jadi Date tengah malam waktu lokal WIT/WIB
+// akan jatuh ke sore hari sebelumnya dan tampil mundur sehari di Excel.
+// Karena itu tanggalnya dipasang sebagai tengah malam UTC.
+function keTanggal(iso) {
+  if (!iso) return null
+  const [y, m, d] = String(iso).split('-').map(Number)
+  return y && m && d ? new Date(Date.UTC(y, m - 1, d)) : null
+}
+
+// Sama alasannya untuk stempel waktu: digeser supaya jam UTC-nya sama dengan
+// jam dinding setempat, jadi yang terbaca di Excel adalah waktu ekspor lokal.
+function waktuSekarangExcel() {
+  const now = new Date()
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000)
+}
+
+function rapikanSheet(ws, kolomAngka = [], kolomTanggal = []) {
+  ws.getRow(1).font = { bold: true }
+  ws.getRow(1).alignment = { vertical: 'middle', wrapText: true }
+  ws.views = [{ state: 'frozen', ySplit: 1 }]
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: ws.columnCount } }
+  for (const k of kolomAngka) ws.getColumn(k).numFmt = NUM_FMT
+  for (const k of kolomTanggal) ws.getColumn(k).numFmt = TGL_FMT
+}
+
+// Sheet pertama: rekaman filter yang dipakai, supaya file yang sudah beredar
+// tidak salah dibaca sebagai angka setahun penuh.
+function sheetInfo(wb, jumlahDokumen) {
+  const ws = wb.addWorksheet('Info Filter')
+  ws.columns = [{ width: 24 }, { width: 62 }]
+  const namaUnit = opsi.value.skpd.find(o => o.kode === filter.value.kodeSubSkpd)
+  const namaRek = opsi.value.rekening.find(o => o.kode === filter.value.kodeRekening)
+  const baris = [
+    ['Tahun Anggaran', String(tahun.value)],
+    ['Periode', labelPeriode.value],
+    ['Unit SKPD', filter.value.kodeSubSkpd
+      ? `${namaUnit?.nama || ''} (${filter.value.kodeSubSkpd})`.trim() : 'semua unit'],
+    ['Kode Rekening', filter.value.kodeRekening
+      ? `${filter.value.kodeRekening} ${namaRek?.nama || ''}`.trim() : 'semua rekening'],
+    ['Jenis Dokumen', filter.value.jenisDokumen || 'semua jenis'],
+    ['Status SP2D', filter.value.sp2d === 'ada' ? 'sudah SP2D'
+      : filter.value.sp2d === 'belum' ? 'belum SP2D' : 'semua'],
+    ['Pencarian', filter.value.q.trim() || '—'],
+    ['Jumlah Dokumen', jumlahDokumen],
+    ['Diekspor', waktuSekarangExcel()],
+  ]
+  for (const [label, nilai] of baris) {
+    const row = ws.addRow([label, nilai])
+    row.getCell(1).font = { bold: true }
+  }
+  ws.getCell(`B${baris.length}`).numFmt = 'dd/mm/yyyy hh:mm'
+  return ws
+}
+
+function sheetDokumen(wb, data) {
+  const ws = wb.addWorksheet('Dokumen')
+  ws.columns = [
+    { header: 'No', key: 'no', width: 7 },
+    { header: 'Bulan', key: 'bulan', width: 9 },
+    { header: 'Kode Unit SKPD', key: 'kodeUnit', width: 24 },
+    { header: 'Nama Unit SKPD', key: 'namaUnit', width: 32 },
+    { header: 'Kode Sub Kegiatan', key: 'kodeSubKeg', width: 26 },
+    { header: 'Nama Sub Kegiatan', key: 'namaSubKeg', width: 40 },
+    { header: 'Kode Rekening', key: 'kodeRek', width: 22 },
+    { header: 'Nama Rekening', key: 'namaRek', width: 40 },
+    { header: 'Jenis', key: 'jenis', width: 10 },
+    { header: 'Nomor Dokumen', key: 'nomorDok', width: 24 },
+    { header: 'Tanggal Dokumen', key: 'tglDok', width: 16 },
+    { header: 'Keterangan', key: 'keterangan', width: 50 },
+    { header: 'Nilai Realisasi', key: 'nilai', width: 18 },
+    { header: 'Nomor SP2D', key: 'nomorSp2d', width: 26 },
+    { header: 'Tanggal SP2D', key: 'tglSp2d', width: 16 },
+    { header: 'Nilai SP2D', key: 'nilaiSp2d', width: 18 },
+  ]
+  data.forEach((r, i) => {
+    ws.addRow({
+      no: i + 1,
+      bulan: BULAN_SINGKAT[r.bulan] || '',
+      kodeUnit: r.kode_sub_skpd, namaUnit: r.nama_sub_skpd || r.nama_skpd,
+      kodeSubKeg: r.kode_sub_kegiatan, namaSubKeg: r.nama_sub_kegiatan,
+      kodeRek: r.kode_rekening, namaRek: r.nama_rekening,
+      jenis: r.jenis_dokumen, nomorDok: r.nomor_dokumen,
+      tglDok: keTanggal(r.tanggal_dokumen),
+      keterangan: r.keterangan_dokumen,
+      nilai: Number(r.nilai_realisasi) || 0,
+      nomorSp2d: r.nomor_sp2d || '',
+      tglSp2d: keTanggal(r.tanggal_sp2d),
+      nilaiSp2d: Number(r.nilai_sp2d) || 0,
+    })
+  })
+  rapikanSheet(ws, ['nilai', 'nilaiSp2d'], ['tglDok', 'tglSp2d'])
+  return ws
+}
+
+function sheetRekapRekening(wb) {
+  const ws = wb.addWorksheet('Rekap Rekening')
+  ws.columns = [
+    { header: 'Kode Rekening', key: 'kode', width: 22 },
+    { header: 'Nama Rekening', key: 'nama', width: 45 },
+    { header: 'Unit', key: 'unit', width: 8 },
+    { header: 'Dokumen', key: 'dokumen', width: 11 },
+    { header: 'Belum SP2D', key: 'belumSp2d', width: 12 },
+    { header: 'Nilai Realisasi', key: 'nilai', width: 18 },
+    { header: 'Sudah SP2D', key: 'nilaiSp2d', width: 18 },
+    { header: 'Pagu Setahun', key: 'pagu', width: 18 },
+    { header: 'Sisa', key: 'sisa', width: 18 },
+    { header: '% Serap', key: 'persen', width: 10 },
+  ]
+  for (const r of barisRekap.value) {
+    ws.addRow({
+      kode: r.kode, nama: r.nama, unit: r.skpd,
+      dokumen: r.dokumen, belumSp2d: r.dokumen - r.dokumenSp2d,
+      nilai: r.nilai, nilaiSp2d: r.nilaiSp2d, pagu: r.pagu, sisa: r.sisa,
+      persen: r.persen == null ? null : Math.round(r.persen * 10) / 10,
+    })
+  }
+  rapikanSheet(ws, ['nilai', 'nilaiSp2d', 'pagu', 'sisa'])
+  return ws
+}
+
+// Matriks kelengkapan: satu kolom per bulan, isinya jumlah dokumen. Bulan yang
+// belum diimport sama sekali dikosongkan, bukan diisi 0 — bedanya penting.
+function sheetKelengkapan(wb) {
+  const ws = wb.addWorksheet('Kelengkapan')
+  ws.columns = [
+    { header: 'Kode Unit SKPD', key: 'kode', width: 24 },
+    { header: 'Nama Unit SKPD', key: 'nama', width: 34 },
+    { header: 'Pagu', key: 'pagu', width: 18 },
+    ...BULAN_OPTIONS.map(b => ({ header: BULAN_SINGKAT[b.value], key: `b${b.value}`, width: 8 })),
+    { header: 'Total Dokumen', key: 'total', width: 14 },
+    { header: 'Bulan Kurang', key: 'kurang', width: 34 },
+  ]
+  for (const row of barisMatriks.value) {
+    const isi = { kode: row.kodeSubSkpd, nama: row.namaSubSkpd, pagu: row.pagu, total: row.dokumen }
+    for (const b of BULAN_OPTIONS) {
+      isi[`b${b.value}`] = bulanDiperiksa.value.includes(b.value)
+        ? (row.perBulan?.[b.value]?.dokumen ?? 0)
+        : null
+    }
+    isi.kurang = bulanKosong(row).map(b => BULAN_SINGKAT[b]).join(', ')
+    ws.addRow(isi)
+  }
+  rapikanSheet(ws, ['pagu', 'total'])
+  return ws
+}
+
+// Potongan nama file dari filter, supaya beberapa hasil ekspor tidak saling
+// menimpa di folder Download.
+function namaBerkas() {
+  const bagian = ['dokumen-realisasi', tahun.value]
+  if (filter.value.kodeSubSkpd) bagian.push(filter.value.kodeSubSkpd)
+  if (filter.value.kodeRekening) bagian.push(filter.value.kodeRekening)
+  if (filter.value.bulan) bagian.push(BULAN_SINGKAT[filter.value.bulan].toLowerCase())
+  const [dari, sampai] = filter.value.tanggal || []
+  if (dari || sampai) bagian.push(`${dari || 'awal'}_sd_${sampai || 'akhir'}`)
+  return bagian.join('-').replace(/[^\w.\-]/g, '') + '.xlsx'
+}
+
+async function exportExcel() {
+  loadingEkspor.value = true
+  try {
+    const p = paramsFilter()
+    if (urut.value.by) { p.sortBy = urut.value.by; p.sortDir = urut.value.dir }
+    const { data } = await api.get('/sumber-data/dokumen-realisasi/ekspor', { params: p })
+    const dokumen = data.data || []
+    if (!dokumen.length) {
+      ElMessage.warning('Tidak ada dokumen yang cocok dengan filter')
+      return
+    }
+
+    const wb = new ExcelJS.Workbook()
+    sheetInfo(wb, dokumen.length)
+    sheetDokumen(wb, dokumen)
+    if (barisRekap.value.length) sheetRekapRekening(wb)
+    if (barisMatriks.value.length) sheetKelengkapan(wb)
+
+    const buf = await wb.xlsx.writeBuffer()
+    const url = URL.createObjectURL(new Blob([buf], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = namaBerkas()
+    a.click()
+    URL.revokeObjectURL(url)
+
+    const terpotong = data.total >= data.batas
+    ElMessage.success(terpotong
+      ? `${dokumen.length.toLocaleString('id-ID')} dokumen diekspor (dibatasi ${data.batas.toLocaleString('id-ID')} baris)`
+      : `${dokumen.length.toLocaleString('id-ID')} dokumen diekspor`)
+  } catch {
+    ElMessage.error('Gagal mengekspor data')
+  } finally {
+    loadingEkspor.value = false
+  }
+}
+
 async function clearData() {
   try {
     await ElMessageBox.confirm(
@@ -371,6 +577,15 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
         <el-upload :auto-upload="false" :show-file-list="false" accept=".xlsx,.xls" :on-change="handleFileImport">
           <el-button type="primary" :icon="Upload" :disabled="!bulanImport">Import Excel</el-button>
         </el-upload>
+        <el-button
+          type="success"
+          :icon="Download"
+          :loading="loadingEkspor"
+          :disabled="!adaData"
+          @click="exportExcel"
+        >
+          Export Excel
+        </el-button>
         <el-button type="danger" :icon="Delete" :disabled="!adaData" @click="clearData">
           Hapus Semua
         </el-button>
@@ -411,8 +626,8 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
       <el-card style="margin-bottom:16px;">
         <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
           <el-select
-            v-model="filter.kodeSkpd"
-            placeholder="Semua SKPD"
+            v-model="filter.kodeSubSkpd"
+            placeholder="Semua Unit SKPD"
             clearable filterable
             style="width:250px;"
           >
@@ -508,12 +723,12 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
       <el-card v-loading="loadingMatriks" style="margin-bottom:16px;">
         <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
           <el-icon :size="18" style="color:#409eff;"><Grid /></el-icon>
-          <span style="font-size:14px; font-weight:700; color:#303133;">Kelengkapan Dokumen per SKPD &times; Bulan</span>
+          <span style="font-size:14px; font-weight:700; color:#303133;">Kelengkapan Dokumen per Unit SKPD &times; Bulan</span>
           <el-tag v-if="jumlahBelumLengkap" type="warning" size="small" effect="light">
-            {{ jumlahBelumLengkap }} SKPD belum lengkap
+            {{ jumlahBelumLengkap }} unit belum lengkap
           </el-tag>
           <el-tag v-else-if="bulanDiperiksa.length" type="success" size="small" effect="light">
-            Semua SKPD lengkap untuk {{ bulanDiperiksa.length }} bulan
+            Semua unit lengkap untuk {{ bulanDiperiksa.length }} bulan
           </el-tag>
           <el-checkbox v-model="hanyaBelumLengkap" size="small" style="margin-left:6px;">
             Hanya yang belum lengkap
@@ -524,8 +739,9 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
         </div>
 
         <p style="margin:0 0 10px; font-size:12px; color:#909399;">
-          Baris = SKPD yang <strong>punya pagu</strong> pada rekening yang disaring, jadi dinas yang dokumennya belum
-          masuk sama sekali tetap kelihatan. Angka dalam sel = jumlah dokumen; sel abu = belum ada dokumen.
+          Baris = Unit SKPD yang <strong>punya pagu</strong> pada rekening yang disaring — RSUD dan tiap puskesmas
+          berdiri sendiri, tidak melebur ke dinas induknya, jadi unit yang dokumennya belum masuk sama sekali tetap
+          kelihatan. Angka dalam sel = jumlah dokumen; sel abu = belum ada dokumen.
           Bulan yang sama sekali belum diimport tidak dihitung sebagai kekurangan. Klik sel untuk melihat rinciannya.
           <template v-if="filter.tanggal?.[0] || filter.tanggal?.[1]">
             <br><strong style="color:#e6a23c;">Batas tanggal aktif ({{ labelPeriode }})</strong> — sel hanya menghitung
@@ -537,7 +753,7 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
           <table class="matriks">
             <thead>
               <tr>
-                <th class="lengket kiri">SKPD</th>
+                <th class="lengket kiri">Unit SKPD</th>
                 <th
                   v-for="b in BULAN_OPTIONS"
                   :key="b.value"
@@ -546,7 +762,7 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
                   {{ BULAN_SINGKAT[b.value] }}
                   <div class="jumlah-bulan">
                     {{ bulanDiperiksa.includes(b.value)
-                      ? (kelengkapan.perBulan.find(x => x.bulan === b.value)?.skpdAda ?? 0) + ' skpd'
+                      ? (kelengkapan.perBulan.find(x => x.bulan === b.value)?.skpdAda ?? 0) + ' unit'
                       : '—' }}
                   </div>
                 </th>
@@ -554,11 +770,11 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in barisMatriks" :key="row.kodeSkpd">
+              <tr v-for="row in barisMatriks" :key="row.kodeSubSkpd">
                 <td class="lengket kiri nama">
-                  <div style="font-weight:600;">{{ row.namaSkpd }}</div>
+                  <div style="font-weight:600;">{{ row.namaSubSkpd }}</div>
                   <div style="font-size:10px; color:#c0c4cc; font-family:monospace;">
-                    {{ row.kodeSkpd }}
+                    {{ row.kodeSubSkpd }}
                     <span v-if="row.pagu" style="color:#909399;"> &bull; pagu {{ formatMio(row.pagu) }}</span>
                     <span v-else style="color:#e6a23c;"> &bull; tanpa pagu</span>
                   </div>
@@ -570,7 +786,7 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
                     ada: !!selMatriks(row, b.value),
                     kosong: !selMatriks(row, b.value) && bulanDiperiksa.includes(b.value),
                     mati: !bulanDiperiksa.includes(b.value),
-                    aktif: filter.kodeSkpd === row.kodeSkpd && filter.bulan === b.value,
+                    aktif: filter.kodeSubSkpd === row.kodeSubSkpd && filter.bulan === b.value,
                   }"
                   @click="klikSel(row, b.value)"
                 >
@@ -592,7 +808,7 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
               </tr>
               <tr v-if="!barisMatriks.length">
                 <td :colspan="14" style="text-align:center; color:#909399; padding:14px;">
-                  {{ hanyaBelumLengkap ? 'Semua SKPD sudah lengkap' : 'Tidak ada SKPD yang cocok dengan filter' }}
+                  {{ hanyaBelumLengkap ? 'Semua unit sudah lengkap' : 'Tidak ada unit yang cocok dengan filter' }}
                 </td>
               </tr>
             </tbody>
@@ -646,7 +862,7 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
             </template>
           </el-table-column>
           <el-table-column label="Nama Rekening" prop="nama" min-width="240" sortable show-overflow-tooltip />
-          <el-table-column label="SKPD" prop="skpd" width="80" align="center" sortable />
+          <el-table-column label="Unit" prop="skpd" width="80" align="center" sortable />
           <el-table-column label="Dokumen" prop="dokumen" width="100" align="right" sortable>
             <template #default="{ row }">
               <span style="font-variant-numeric:tabular-nums;">{{ row.dokumen.toLocaleString('id-ID') }}</span>
@@ -707,7 +923,7 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
             <el-tag size="small" type="info" effect="plain">{{ BULAN_SINGKAT[row.bulan] || '—' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="SKPD" min-width="180" show-overflow-tooltip>
+        <el-table-column label="Unit SKPD" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
             <div style="font-size:12px;">{{ row.nama_sub_skpd || row.nama_skpd }}</div>
             <div style="font-family:monospace; font-size:10px; color:#c0c4cc;">{{ row.kode_sub_skpd }}</div>

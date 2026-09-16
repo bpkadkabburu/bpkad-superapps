@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { getAklapRealisasiRows, getSubSkpdToSkpd, mergeAklapIntoLeaves } from './aklapRealisasi.js'
+import { klausaAwalanRekening } from '../utils/kodeRekening.js'
 
 const router = new Hono()
 router.use('*', requireAuth)
@@ -16,6 +17,50 @@ const LEVELS = [
   { key: 'subKegiatan', badge: 'Sub Kegiatan', kode: 'kode_sub_kegiatan', nama: 'nama_sub_kegiatan' },
   { key: 'belanja', badge: 'Belanja', kode: 'kode_rekening', nama: 'nama_rekening' },
 ]
+
+// Kode rekening dipakai sebagai AWALAN (5.1.01 mencakup seluruh rinciannya),
+// jadi isinya dibatasi angka dan titik supaya wildcard LIKE tidak bisa disuntik.
+function bersihkanKode(raw) {
+  return String(raw || '').replace(/[^0-9.]/g, '')
+}
+
+function bulanValid(raw) {
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 1 && n <= 12 ? n : null
+}
+
+// Filter rekap: kode rekening (menyentuh anggaran, realisasi, dan AKLAP) serta
+// batas bulan (hanya menyentuh dokumen realisasi — anggaran tidak punya bulan,
+// dan dokumen_aklap disimpan sebagai potret setahun tanpa rincian bulan).
+function bacaFilter(c) {
+  const kodeRekening = bersihkanKode(c.req.query('kodeRekening'))
+  const bulan = bulanValid(c.req.query('bulan'))
+  let bulanDari = bulanValid(c.req.query('bulanDari'))
+  let bulanSampai = bulanValid(c.req.query('bulanSampai'))
+  // Bulan tunggal menang atas rentang supaya tidak ada dua aturan yang bentrok.
+  if (bulan) { bulanDari = null; bulanSampai = null }
+  if (bulanDari && bulanSampai && bulanDari > bulanSampai) {
+    [bulanDari, bulanSampai] = [bulanSampai, bulanDari]
+  }
+  return { kodeRekening, bulan, bulanDari, bulanSampai }
+}
+
+// Klausa rekening untuk satu kolom pada tabel mana pun (anggaran/realisasi/aklap).
+function klausaRekening(f, kolom = 'kode_rekening') {
+  if (!f.kodeRekening) return { sql: '', params: [] }
+  const awalan = klausaAwalanRekening(kolom, f.kodeRekening)
+  return { sql: ` AND ${awalan.sql}`, params: awalan.params }
+}
+
+// Klausa bulan — khusus dokumen_realisasi.
+function klausaBulan(f) {
+  if (f.bulan) return { sql: ' AND bulan = ?', params: [f.bulan] }
+  const klausa = []
+  const params = []
+  if (f.bulanDari) { klausa.push(' AND bulan >= ?'); params.push(f.bulanDari) }
+  if (f.bulanSampai) { klausa.push(' AND bulan <= ?'); params.push(f.bulanSampai) }
+  return { sql: klausa.join(''), params }
+}
 
 function emptyTotals() {
   return { pagu: 0, realisasiSpp: 0, realisasiSp2d: 0, realisasiAklap: 0 }
@@ -36,6 +81,10 @@ router.get('/', async (c) => {
   const tahun_id = taRows[0]?.id
   if (!tahun_id) return c.json({ data: [] })
 
+  const f = bacaFilter(c)
+  const fRek = klausaRekening(f)
+  const fBulan = klausaBulan(f)
+
   const [paguRows] = await db.query(
     `SELECT
        kode_skpd, nama_skpd,
@@ -49,13 +98,13 @@ router.get('/', async (c) => {
        kode_sumber_dana, nama_sumber_dana,
        SUM(pagu) AS pagu
      FROM anggaran_rekap
-     WHERE tahun_id = ?
+     WHERE tahun_id = ?${fRek.sql}
      GROUP BY kode_skpd, nama_skpd, kode_sub_unit, nama_sub_unit,
        kode_urusan, nama_urusan, kode_bidang_urusan, nama_bidang_urusan,
        kode_program, nama_program, kode_kegiatan, nama_kegiatan,
        kode_sub_kegiatan, nama_sub_kegiatan, kode_rekening, nama_rekening,
        kode_sumber_dana, nama_sumber_dana`,
-    [tahun_id]
+    [tahun_id, ...fRek.params]
   )
 
   // Peta bidang PMK per kode_sub_kegiatan (kalau tabel referensi ada isinya).
@@ -83,12 +132,12 @@ router.get('/', async (c) => {
        SUM(CASE WHEN nomor_sp2d IS NOT NULL AND LOWER(TRIM(nomor_sp2d)) NOT IN ('', 'null', '-')
                 THEN nilai_realisasi ELSE 0 END) AS realisasi_sp2d
      FROM dokumen_realisasi
-     WHERE tahun_id = ?
+     WHERE tahun_id = ?${fRek.sql}${fBulan.sql}
      GROUP BY kode_skpd, nama_skpd, kode_sub_skpd, nama_sub_skpd,
        kode_urusan, nama_urusan, kode_bidang_urusan, nama_bidang_urusan,
        kode_program, nama_program, kode_kegiatan, nama_kegiatan,
        kode_sub_kegiatan, nama_sub_kegiatan, kode_rekening, nama_rekening`,
-    [tahun_id]
+    [tahun_id, ...fRek.params, ...fBulan.params]
   )
 
   // Kunci gabung: seluruh kode hierarki, karena kode_sub_kegiatan + kode_rekening
@@ -150,7 +199,7 @@ router.get('/', async (c) => {
 
   // Realisasi AKLAP (LRA Per Program) digabung memakai kunci leaf yang sama.
   // AKLAP tak punya kode_skpd, jadi diperkaya dari peta sub_skpd -> skpd.
-  const aklapRows = await getAklapRealisasiRows(db, tahun_id)
+  const aklapRows = await getAklapRealisasiRows(db, tahun_id, fRek)
   const skpdMap = await getSubSkpdToSkpd(db, tahun_id)
   mergeAklapIntoLeaves(leaves, aklapRows, skpdMap, leafKey, (row, val) => ({
     row,
@@ -212,6 +261,51 @@ router.get('/', async (c) => {
   }
 
   return c.json({ data: toArray(root), totals: root.totals })
+})
+
+// Pilihan isi filter. Rekening diambil dari gabungan anggaran + realisasi, jadi
+// rekening yang punya pagu tapi belum ada dokumennya tetap bisa dipilih.
+router.get('/opsi', async (c) => {
+  const tahun = c.req.query('tahun')
+  const kosong = { rekening: [], bulan: [] }
+  if (!tahun) return c.json(kosong)
+
+  const [taRows] = await db.query('SELECT id FROM tahun_anggaran WHERE tahun = ?', [tahun])
+  const tahun_id = taRows[0]?.id
+  if (!tahun_id) return c.json(kosong)
+
+  const [rekening] = await db.query(
+    `SELECT kode, MAX(nama) AS nama, SUM(dokumen) AS dokumen, MAX(ada_pagu) AS ada_pagu
+     FROM (
+       SELECT kode_rekening AS kode, MAX(nama_rekening) AS nama, 0 AS dokumen, 1 AS ada_pagu
+         FROM anggaran_rekap WHERE tahun_id = ? AND kode_rekening IS NOT NULL
+         GROUP BY kode_rekening
+       UNION ALL
+       SELECT kode_rekening AS kode, MAX(nama_rekening) AS nama, COUNT(*) AS dokumen, 0 AS ada_pagu
+         FROM dokumen_realisasi WHERE tahun_id = ? AND kode_rekening IS NOT NULL
+         GROUP BY kode_rekening
+     ) t
+     GROUP BY kode
+     ORDER BY kode`,
+    [tahun_id, tahun_id]
+  )
+
+  const [bulan] = await db.query(
+    `SELECT bulan, COUNT(*) AS jumlah
+     FROM dokumen_realisasi WHERE tahun_id = ? AND bulan IS NOT NULL
+     GROUP BY bulan ORDER BY bulan`,
+    [tahun_id]
+  )
+
+  return c.json({
+    rekening: rekening.map(r => ({
+      kode: r.kode,
+      nama: r.nama,
+      dokumen: Number(r.dokumen) || 0,
+      adaPagu: Number(r.ada_pagu) === 1,
+    })),
+    bulan: bulan.map(r => ({ bulan: Number(r.bulan), jumlah: Number(r.jumlah) })),
+  })
 })
 
 // Validasi Sub Kegiatan per SKPD: yang ditarik ke rekap (anggaran_rekap + dokumen_realisasi)

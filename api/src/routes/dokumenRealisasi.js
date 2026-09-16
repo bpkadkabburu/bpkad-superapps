@@ -56,10 +56,13 @@ function bangunFilter(c, { abaikanBulan = false } = {}) {
     params.push(`${tanggalSampai} 00:00:00`)
   }
 
-  const kodeSkpd = c.req.query('kodeSkpd')
-  if (kodeSkpd) {
-    klausa.push('dr.kode_skpd = ?')
-    params.push(kodeSkpd)
+  // Disaring di level Unit SKPD (sub SKPD), bukan SKPD induk — kalau tidak,
+  // RSUD dan tiap puskesmas melebur ke dalam Dinas Kesehatan dan tidak bisa
+  // dilihat sendiri, padahal anggarannya dikelola terpisah.
+  const kodeSubSkpd = c.req.query('kodeSubSkpd')
+  if (kodeSubSkpd) {
+    klausa.push('dr.kode_sub_skpd = ?')
+    params.push(kodeSubSkpd)
   }
 
   const kodeRekening = bersihkanKode(c.req.query('kodeRekening'))
@@ -102,7 +105,7 @@ const KOLOM_URUT = {
   kode_rekening: 'dr.kode_rekening',
   nomor_dokumen: 'dr.nomor_dokumen',
 }
-const URUT_BAWAAN = 'dr.bulan, dr.kode_skpd, dr.tanggal_dokumen, dr.id'
+const URUT_BAWAAN = 'dr.bulan, dr.kode_sub_skpd, dr.tanggal_dokumen, dr.id'
 
 function klausaUrut(c) {
   const kolom = KOLOM_URUT[String(c.req.query('sortBy') || '')]
@@ -167,9 +170,9 @@ router.get('/opsi', async (c) => {
   if (!tahun_id) return c.json({ skpd: [], rekening: [], jenisDokumen: [], bulan: [] })
 
   const [skpd] = await db.query(
-    `SELECT kode_skpd AS kode, MAX(nama_skpd) AS nama, COUNT(*) AS jumlah
-     FROM dokumen_realisasi WHERE tahun_id = ? AND kode_skpd IS NOT NULL
-     GROUP BY kode_skpd ORDER BY kode_skpd`,
+    `SELECT kode_sub_skpd AS kode, MAX(nama_sub_skpd) AS nama, COUNT(*) AS jumlah
+     FROM dokumen_realisasi WHERE tahun_id = ? AND kode_sub_skpd IS NOT NULL
+     GROUP BY kode_sub_skpd ORDER BY kode_sub_skpd`,
     [tahun_id]
   )
   const [rekening] = await db.query(
@@ -219,7 +222,7 @@ router.get('/rekap-rekening', async (c) => {
   const [selRows] = await db.query(
     `SELECT dr.kode_rekening AS kode, MAX(dr.nama_rekening) AS nama,
        COUNT(*) AS dokumen,
-       COUNT(DISTINCT dr.kode_skpd) AS skpd,
+       COUNT(DISTINCT dr.kode_sub_skpd) AS skpd,
        COALESCE(SUM(dr.nilai_realisasi), 0) AS nilai,
        COALESCE(SUM(CASE WHEN ${SP2D_ADA} THEN dr.nilai_realisasi ELSE 0 END), 0) AS nilai_sp2d,
        COALESCE(SUM(CASE WHEN ${SP2D_ADA} THEN 1 ELSE 0 END), 0) AS dokumen_sp2d
@@ -238,8 +241,8 @@ router.get('/rekap-rekening', async (c) => {
     paguKlausa.push(awalan.sql)
     paguParams.push(...awalan.params)
   }
-  const kodeSkpd = c.req.query('kodeSkpd')
-  if (kodeSkpd) { paguKlausa.push('kode_skpd = ?'); paguParams.push(kodeSkpd) }
+  const kodeSubSkpd = c.req.query('kodeSubSkpd')
+  if (kodeSubSkpd) { paguKlausa.push('kode_sub_unit = ?'); paguParams.push(kodeSubSkpd) }
 
   const [paguRows] = await db.query(
     `SELECT kode_rekening AS kode, MAX(nama_rekening) AS nama, SUM(pagu) AS pagu
@@ -300,17 +303,17 @@ router.get('/rekap-rekening', async (c) => {
   return c.json({ data, ringkasan })
 })
 
-// Matriks kelengkapan SKPD x bulan: menjawab "dokumen dinas ini, bulan ini,
+// Matriks kelengkapan Unit SKPD x bulan: menjawab "dokumen unit ini, bulan ini,
 // rekening ini sudah masuk atau belum". Daftar barisnya TIDAK diambil dari
-// dokumen_realisasi, melainkan dari SKPD yang punya pagu pada rekening yang
-// disaring — kalau tidak, dinas yang dokumennya belum masuk sama sekali justru
+// dokumen_realisasi, melainkan dari unit yang punya pagu pada rekening yang
+// disaring — kalau tidak, unit yang dokumennya belum masuk sama sekali justru
 // hilang dari tabel, padahal itu justru yang mau dicari.
 router.get('/kelengkapan', async (c) => {
   const tahun_id = await idTahun(c.req.query('tahun'))
   if (!tahun_id) return c.json({ skpd: [], perBulan: [], bulanAda: [] })
 
   const kodeRekening = bersihkanKode(c.req.query('kodeRekening'))
-  const kodeSkpd = c.req.query('kodeSkpd')
+  const kodeSubSkpd = c.req.query('kodeSubSkpd')
 
   const paguKlausa = []
   const paguParams = [tahun_id]
@@ -319,25 +322,25 @@ router.get('/kelengkapan', async (c) => {
     paguKlausa.push(awalan.sql)
     paguParams.push(...awalan.params)
   }
-  if (kodeSkpd) { paguKlausa.push('kode_skpd = ?'); paguParams.push(kodeSkpd) }
+  if (kodeSubSkpd) { paguKlausa.push('kode_sub_unit = ?'); paguParams.push(kodeSubSkpd) }
 
   const [paguRows] = await db.query(
-    `SELECT kode_skpd AS kode, MAX(nama_skpd) AS nama, SUM(pagu) AS pagu
+    `SELECT kode_sub_unit AS kode, MAX(nama_sub_unit) AS nama, SUM(pagu) AS pagu
      FROM anggaran_rekap
      WHERE tahun_id = ?${paguKlausa.length ? ' AND ' + paguKlausa.join(' AND ') : ''}
-     GROUP BY kode_skpd`,
+     GROUP BY kode_sub_unit`,
     paguParams
   )
 
   const f = bangunFilter(c, { abaikanBulan: true })
   const [selRows] = await db.query(
-    `SELECT dr.kode_skpd AS kode, MAX(dr.nama_skpd) AS nama, dr.bulan,
+    `SELECT dr.kode_sub_skpd AS kode, MAX(dr.nama_sub_skpd) AS nama, dr.bulan,
        COUNT(*) AS dokumen,
        COALESCE(SUM(dr.nilai_realisasi), 0) AS nilai,
        COALESCE(SUM(CASE WHEN ${SP2D_ADA} THEN 1 ELSE 0 END), 0) AS dokumen_sp2d
      FROM dokumen_realisasi dr
      WHERE dr.tahun_id = ?${f.sql}
-     GROUP BY dr.kode_skpd, dr.bulan`,
+     GROUP BY dr.kode_sub_skpd, dr.bulan`,
     [tahun_id, ...f.params]
   )
 
@@ -345,10 +348,10 @@ router.get('/kelengkapan', async (c) => {
   function ambil(kode, nama) {
     let b = baris.get(kode)
     if (!b) {
-      b = { kodeSkpd: kode, namaSkpd: nama || kode, pagu: 0, perBulan: {}, dokumen: 0, nilai: 0, dokumenSp2d: 0 }
+      b = { kodeSubSkpd: kode, namaSubSkpd: nama || kode, pagu: 0, perBulan: {}, dokumen: 0, nilai: 0, dokumenSp2d: 0 }
       baris.set(kode, b)
-    } else if ((!b.namaSkpd || b.namaSkpd === kode) && nama) {
-      b.namaSkpd = nama
+    } else if ((!b.namaSubSkpd || b.namaSubSkpd === kode) && nama) {
+      b.namaSubSkpd = nama
     }
     return b
   }
@@ -373,7 +376,7 @@ router.get('/kelengkapan', async (c) => {
   }
 
   const skpd = Array.from(baris.values())
-    .sort((a, b) => String(a.kodeSkpd).localeCompare(String(b.kodeSkpd), 'id', { numeric: true }))
+    .sort((a, b) => String(a.kodeSubSkpd).localeCompare(String(b.kodeSubSkpd), 'id', { numeric: true }))
 
   const perBulan = []
   for (let b = 1; b <= 12; b++) {
@@ -391,6 +394,36 @@ router.get('/kelengkapan', async (c) => {
     bulanAda: perBulan.filter(b => b.dokumen > 0).map(b => b.bulan),
     jumlahSkpd: skpd.length,
   })
+})
+
+// Ekspor: baris yang sama persis dengan daftar dokumen (filter + urutan sama),
+// hanya tanpa paginasi — worksheet-nya dirakit di browser. Kolomnya dibatasi
+// pada yang memang dipakai di Excel, bukan dr.* (40+ kolom), supaya payloadnya
+// tidak membengkak. Tanggal dikirim sebagai 'YYYY-MM-DD' agar tidak bergeser
+// hari karena konversi zona waktu di JSON.
+const BATAS_EKSPOR = 100000
+
+router.get('/ekspor', async (c) => {
+  const tahun_id = await idTahun(c.req.query('tahun'))
+  if (!tahun_id) return c.json({ data: [], total: 0 })
+
+  const f = bangunFilter(c)
+  const [rows] = await db.query(
+    `SELECT dr.bulan, dr.kode_skpd, dr.nama_skpd, dr.kode_sub_skpd, dr.nama_sub_skpd,
+       dr.kode_sub_kegiatan, dr.nama_sub_kegiatan, dr.kode_rekening, dr.nama_rekening,
+       dr.jenis_dokumen, dr.nomor_dokumen,
+       DATE_FORMAT(dr.tanggal_dokumen, '%Y-%m-%d') AS tanggal_dokumen,
+       dr.keterangan_dokumen, dr.nilai_realisasi, dr.nomor_sp2d,
+       DATE_FORMAT(dr.tanggal_sp2d, '%Y-%m-%d') AS tanggal_sp2d,
+       dr.nilai_sp2d
+     FROM dokumen_realisasi dr
+     WHERE dr.tahun_id = ?${f.sql}
+     ORDER BY ${klausaUrut(c)}
+     LIMIT ?`,
+    [tahun_id, ...f.params, BATAS_EKSPOR]
+  )
+
+  return c.json({ data: rows, total: rows.length, batas: BATAS_EKSPOR })
 })
 
 router.delete('/', async (c) => {

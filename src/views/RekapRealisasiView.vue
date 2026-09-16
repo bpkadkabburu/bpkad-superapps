@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { Search, ArrowRight } from '@element-plus/icons-vue'
 import api from '../utils/api.js'
@@ -8,6 +8,15 @@ import RekapRealisasiNode from '../components/RekapRealisasiNode.vue'
 const route = useRoute()
 const tahun = computed(() => route.params.tahun)
 
+const BULAN_OPTIONS = [
+  { value: 1, label: 'Januari' }, { value: 2, label: 'Februari' },
+  { value: 3, label: 'Maret' }, { value: 4, label: 'April' },
+  { value: 5, label: 'Mei' }, { value: 6, label: 'Juni' },
+  { value: 7, label: 'Juli' }, { value: 8, label: 'Agustus' },
+  { value: 9, label: 'September' }, { value: 10, label: 'Oktober' },
+  { value: 11, label: 'November' }, { value: 12, label: 'Desember' },
+]
+
 const loading = ref(false)
 const nodes = ref([])
 const totals = ref({ pagu: 0, realisasiSpp: 0, realisasiSp2d: 0, realisasiAklap: 0 })
@@ -15,10 +24,38 @@ const totals = ref({ pagu: 0, realisasiSpp: 0, realisasiSp2d: 0, realisasiAklap:
 const search = ref('')
 const belumSp2dOnly = ref(false)
 
+// Filter ini dikerjakan di SERVER, beda dengan search & toggle belum SP2D yang
+// cuma memangkas tree di browser. Alasannya: kalau dipangkas di browser, total
+// tiap node tidak ikut menyusut dan angkanya jadi bohong.
+//   - kodeRekening: awalan, jadi 5.1.01 mencakup seluruh rinciannya. Ikut
+//     memotong anggaran, realisasi, maupun AKLAP.
+//   - bulan / rentang bulan: hanya memotong dokumen realisasi (SPP & SP2D).
+//     Anggaran tidak punya bulan, dan AKLAP disimpan sebagai potret setahun.
+const FILTER_KOSONG = () => ({ kodeRekening: '', bulan: null, bulanDari: null, bulanSampai: null })
+const filter = ref(FILTER_KOSONG())
+const opsi = ref({ rekening: [], bulan: [] })
+
+const adaFilterBulan = computed(() =>
+  !!(filter.value.bulan || filter.value.bulanDari || filter.value.bulanSampai))
+const adaFilterServer = computed(() => !!filter.value.kodeRekening || adaFilterBulan.value)
+
+function paramsFilter() {
+  const p = { tahun: tahun.value }
+  const f = filter.value
+  if (f.kodeRekening) p.kodeRekening = f.kodeRekening
+  if (f.bulan) {
+    p.bulan = f.bulan
+  } else {
+    if (f.bulanDari) p.bulanDari = f.bulanDari
+    if (f.bulanSampai) p.bulanSampai = f.bulanSampai
+  }
+  return p
+}
+
 async function load() {
   loading.value = true
   try {
-    const { data } = await api.get('/rekap-realisasi', { params: { tahun: tahun.value } })
+    const { data } = await api.get('/rekap-realisasi', { params: paramsFilter() })
     nodes.value = data.data
     totals.value = data.totals || { pagu: 0, realisasiSpp: 0, realisasiSp2d: 0, realisasiAklap: 0 }
   } catch {
@@ -28,7 +65,50 @@ async function load() {
   }
 }
 
-onMounted(load)
+async function loadOpsi() {
+  try {
+    const { data } = await api.get('/rekap-realisasi/opsi', { params: { tahun: tahun.value } })
+    opsi.value = data
+  } catch { /* biarkan kosong */ }
+}
+
+onMounted(() => { loadOpsi(); load() })
+
+// Bulan tunggal dan rentang bulan saling meniadakan — server juga memenangkan
+// bulan tunggal, jadi UI tidak boleh menampilkan dua aturan sekaligus.
+watch(() => filter.value.bulan, (val) => {
+  if (val) { filter.value.bulanDari = null; filter.value.bulanSampai = null }
+})
+watch(() => [filter.value.bulanDari, filter.value.bulanSampai], ([dari, sampai]) => {
+  if (dari || sampai) filter.value.bulan = null
+})
+
+// Satu watcher berpenunda: mengubah bulan tunggal ikut mengosongkan rentang,
+// dan tanpa penunda itu jadi dua permintaan untuk satu klik.
+let timerMuat = null
+watch(filter, () => {
+  clearTimeout(timerMuat)
+  timerMuat = setTimeout(load, 50)
+}, { deep: true })
+
+function resetFilter() {
+  filter.value = FILTER_KOSONG()
+}
+
+function labelRekening(o) {
+  return `${o.kode} — ${o.nama || ''}`
+}
+
+const labelPeriode = computed(() => {
+  const f = filter.value
+  if (f.bulan) return BULAN_OPTIONS.find(b => b.value === f.bulan)?.label || ''
+  if (f.bulanDari || f.bulanSampai) {
+    const dari = BULAN_OPTIONS.find(b => b.value === f.bulanDari)?.label || 'Januari'
+    const sampai = BULAN_OPTIONS.find(b => b.value === f.bulanSampai)?.label || 'Desember'
+    return `${dari} s/d ${sampai}`
+  }
+  return 'setahun penuh'
+})
 
 // Prune tree rekursif: node ditampilkan bila dirinya cocok filter,
 // ATAU ada keturunan yang cocok (jalur induk ikut tampil).
@@ -146,30 +226,105 @@ function formatRp(val) {
     </el-card>
 
     <!-- Filter bar -->
-    <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap;">
-      <el-input
-        v-model="search"
-        placeholder="Masukkan kode sub kegiatan lengkap (mis. 1.01.01.2.05.0001)"
-        :prefix-icon="Search"
-        clearable
-        style="max-width: 360px;"
-      />
-      <el-switch
-        v-model="belumSp2dOnly"
-        active-text="Hanya yang belum SP2D"
-        inline-prompt
-      />
-      <span v-if="flatMode" style="font-size: 12px; color: #909399;">
-        {{ flatSubKegiatan.length }} sub kegiatan belum SP2D
-      </span>
-      <span v-else-if="isFiltering" style="font-size: 12px; color: #909399;">
-        {{ filteredNodes.length }} SKPD ditampilkan
-      </span>
-    </div>
+    <el-card style="margin-bottom: 16px;">
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <el-select
+          v-model="filter.kodeRekening"
+          placeholder="Semua rekening"
+          clearable filterable allow-create default-first-option
+          style="width: 320px;"
+        >
+          <el-option
+            v-for="o in opsi.rekening"
+            :key="o.kode"
+            :label="labelRekening(o)"
+            :value="o.kode"
+          >
+            <span>{{ labelRekening(o) }}</span>
+            <span style="float:right; color:#c0c4cc; font-size:11px;">
+              {{ o.dokumen ? o.dokumen + ' dok' : 'pagu saja' }}
+            </span>
+          </el-option>
+        </el-select>
+
+        <el-select v-model="filter.bulan" placeholder="Semua bulan" clearable style="width: 150px;">
+          <el-option
+            v-for="b in BULAN_OPTIONS"
+            :key="b.value"
+            :label="b.label"
+            :value="b.value"
+            :disabled="!opsi.bulan.some(x => x.bulan === b.value)"
+          >
+            <span>{{ b.label }}</span>
+            <span style="float:right; color:#c0c4cc; font-size:11px;">
+              {{ opsi.bulan.find(x => x.bulan === b.value)?.jumlah ?? 'belum ada' }}
+            </span>
+          </el-option>
+        </el-select>
+
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <el-select
+            v-model="filter.bulanDari"
+            placeholder="Dari bulan"
+            clearable
+            :disabled="!!filter.bulan"
+            style="width: 140px;"
+          >
+            <el-option v-for="b in BULAN_OPTIONS" :key="b.value" :label="b.label" :value="b.value" />
+          </el-select>
+          <span style="font-size: 12px; color: #909399;">s/d</span>
+          <el-select
+            v-model="filter.bulanSampai"
+            placeholder="Sampai bulan"
+            clearable
+            :disabled="!!filter.bulan"
+            style="width: 140px;"
+          >
+            <el-option v-for="b in BULAN_OPTIONS" :key="b.value" :label="b.label" :value="b.value" />
+          </el-select>
+        </div>
+
+        <el-button v-if="adaFilterServer" text type="primary" @click="resetFilter">Reset filter</el-button>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 14px; margin-top: 12px; flex-wrap: wrap;">
+        <el-input
+          v-model="search"
+          placeholder="Masukkan kode sub kegiatan lengkap (mis. 1.01.01.2.05.0001)"
+          :prefix-icon="Search"
+          clearable
+          style="max-width: 360px;"
+        />
+        <el-switch
+          v-model="belumSp2dOnly"
+          active-text="Hanya yang belum SP2D"
+          inline-prompt
+        />
+        <span v-if="flatMode" style="font-size: 12px; color: #909399;">
+          {{ flatSubKegiatan.length }} sub kegiatan belum SP2D
+        </span>
+        <span v-else-if="isFiltering" style="font-size: 12px; color: #909399;">
+          {{ filteredNodes.length }} SKPD ditampilkan
+        </span>
+      </div>
+
+      <p style="margin: 10px 0 0; font-size: 12px; color: #909399;">
+        Kode rekening dipakai sebagai <strong>awalan</strong> &mdash; pilih 5.1.01.01.001.00001 untuk satu
+        sub rincian objek, atau ketik sendiri awalannya (mis. <code>5.1.01</code>) untuk menjaring seluruh
+        rinciannya. Anggaran, SPP, SP2D, dan AKLAP sama-sama ikut disaring.
+        <template v-if="adaFilterBulan">
+          <br><strong style="color:#e6a23c;">Periode aktif: {{ labelPeriode }}</strong> &mdash; batas bulan hanya
+          memotong <strong>SPP &amp; SP2D</strong>. Anggaran tetap setahun penuh, dan AKLAP juga tidak ikut
+          terpotong karena datanya disimpan sebagai potret setahun tanpa rincian bulan.
+        </template>
+      </p>
+    </el-card>
 
     <el-empty
       v-if="!loading && nodes.length === 0"
-      description="Belum ada data. Pastikan Anggaran Rekap dan Dokumen Realisasi sudah diimport."
+      :description="adaFilterServer
+        ? 'Tidak ada data untuk filter ini. Coba longgarkan kode rekening atau batas bulannya.'
+        : 'Belum ada data. Pastikan Anggaran Rekap dan Dokumen Realisasi sudah diimport.'"
       :image-size="120"
     />
 
