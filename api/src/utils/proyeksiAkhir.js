@@ -18,6 +18,17 @@ import { subRincianRekening } from './kodeRekening.js'
 // diam-diam sampai ada dinas yang kehabisan gaji.
 const DEFAULT_PERSEN_CADANGAN = 2.5
 
+// Rekening Pembulatan Gaji dan Tunjangan PPh/Tunjangan Khusus paling sering
+// kurang beberapa ribu-ratus ribu rupiah walau sudah dapat acress — sifatnya
+// pembulatan/potongan pajak yang susah ditebak dari tren realisasi. Ditambah
+// sekali lagi FLAT (bukan proporsional, bukan ikut dipotong kalau kantong
+// kurang) supaya dua rekening ini praktis tidak pernah kurang.
+const DEFAULT_TAMBAHAN_FIX = 200000
+const POLA_TAMBAHAN_FIX = /pembulatan|tunjangan\s+(khusus|pph)/i
+function cocokTambahanFix(namaRekening) {
+  return POLA_TAMBAHAN_FIX.test(String(namaRekening || ''))
+}
+
 const num = (v) => Number(v) || 0
 
 // Segmen terakhir kode rekening memisahkan golongan pegawai: …00001 = PNS,
@@ -52,6 +63,10 @@ function golonganKosong(kunci, labelPeta) {
     kunci, label: labelPeta.get(kunci) || kunci,
     jumlahRekening: 0, pagu: 0, sp2d: 0, realisasiTerakhir: 0, perBulanRutin: 0,
     rataRata: 0, kebutuhan: 0, alokasi: 0, tambah: 0, kurangi: 0,
+    tambahanFix: 0, tambahanFixJumlah: 0,
+    // Basis-independen (sama nilainya baik dihitung dari sisi rumus maupun
+    // sisi sim) — jumlah & total isian Sim Gaji di golongan-dinas ini.
+    simTotal: 0, simJumlahTerisi: 0,
   }
 }
 
@@ -77,6 +92,9 @@ function kelompokGolongan(rekening, labelPeta, canonicalGol) {
     g.rataRata += r.rataRata
     g.kebutuhan += r.kebutuhan
     g.alokasi += r.alokasi
+    g.tambahanFix += r.tambahanFix || 0
+    if (r.tambahanFix) g.tambahanFixJumlah += 1
+    if (r.sim != null) { g.simTotal += r.sim; g.simJumlahTerisi += 1 }
     if (r.pergeseran > 0) g.tambah += r.pergeseran
     else if (r.pergeseran < 0) g.kurangi += r.pergeseran
   }
@@ -110,11 +128,26 @@ function rapikanPembulatan(items, target) {
 
 // Alokasi tiap rekening di dalam satu dinas memakai faktor yang sama dengan
 // dinasnya, jadi porsi cadangannya merata dan Σ rekening = alokasi dinas.
-function bagiKeRekening(b) {
+//
+// Tambahan fix (Pembulatan/Tunjangan Khusus) sengaja DIKELUARKAN dari `faktor`
+// — bukan bagian dari kebutuhan yang didistribusikan proporsional, tapi
+// tempelan flat di atasnya. Makanya dihitung sebagai kolam terpisah
+// (`bonusPool`) yang ditambahkan balik ke `b.alokasi` oleh pemanggil, supaya
+// dinas ini tetap dijatah kebutuhan+acress seperti biasa DITAMBAH bonus ini —
+// bukan bonus ini menggerus acress rekening lain lewat rapikanPembulatan.
+// `kebutuhanRekeningFn(r)` = kebutuhan satu rekening sampai Desember, BELUM
+// dibulatkan — basis rumus atau basis sim tergantung siapa yang memanggil
+// (lihat hitungSatuBasis). Dilewatkan sebagai fungsi, bukan field statis,
+// supaya bagiKeRekening tidak perlu tahu basis mana yang sedang dihitung.
+function bagiKeRekening(b, tambahanFix, kebutuhanRekeningFn) {
+  const bonusPool = b.terkunci
+    ? 0
+    : (b._rekening || []).reduce((a, r) => a + (cocokTambahanFix(r.namaRekening) ? tambahanFix : 0), 0)
   const faktor = b.kebutuhan > 0 ? b.alokasi / b.kebutuhan : 0
   const rows = (b._rekening || []).map(r => {
     const pagu = bulat(r.pagu)
-    const kebutuhan = bulat(num(r.sp2d) + num(r.proyeksi))
+    const kebutuhan = bulat(kebutuhanRekeningFn(r))
+    const bonus = !b.terkunci && cocokTambahanFix(r.namaRekening) ? tambahanFix : 0
     return {
       kodeRekening: r.kodeRekening,
       namaRekening: r.namaRekening,
@@ -135,8 +168,18 @@ function bagiKeRekening(b) {
       tertinggi: bulat(r.tertinggi),
       // >1 = tiga kali bayar terakhir di atas rata-rata tahun berjalan.
       tren: Number(r.tren) || 0,
+      // Isian Sim Gaji — basis-independen, dibawa apa adanya (bukan hasil
+      // fallback ke rataRata) supaya Excel/web bisa membedakan "beneran diisi"
+      // dari "jatuh balik ke rumus karena belum diisi".
+      sim: r.sim ?? null,
+      deviasiSim: r.deviasiSim ?? null,
+      selisihSim: r.selisihSim ?? null,
       golongan: subRincianRekening(r.kodeRekening) || '-',
-      alokasi: b.terkunci ? pagu : bulat(kebutuhan * faktor),
+      alokasi: (b.terkunci ? pagu : bulat(kebutuhan * faktor)) + bonus,
+      // Tambahan fix yang menempel di baris ini (0 kalau tidak cocok pola) —
+      // dibawa apa adanya supaya kelihatan di Excel/rekap, bukan tersembunyi
+      // di dalam angka alokasi gelondongan.
+      tambahanFix: bonus,
       // Rekening berpagu yang belum sekali pun dibayar: proyeksinya 0 sehingga
       // alokasinya ikut 0. Sering memang benar (rekening tidak terpakai), tapi
       // bisa juga komponen yang baru dibayar sekali di akhir tahun — ditandai
@@ -144,20 +187,40 @@ function bagiKeRekening(b) {
       tanpaRealisasi: pagu > 0 && kebutuhan <= 0,
     }
   })
-  if (!b.terkunci) rapikanPembulatan(rows, b.alokasi)
+  // Target rapikanPembulatan ikut menghitung bonusPool — kalau tidak, sisa
+  // pembulatan akan "menarik balik" persis sebesar bonus yang baru ditambahkan.
+  if (!b.terkunci) rapikanPembulatan(rows, b.alokasi + bonusPool)
   for (const r of rows) {
     r.pergeseran = r.alokasi - r.pagu
     r.cadanganAkhir = r.alokasi - r.kebutuhan
   }
   // Urut per golongan dulu, baru per kode: seluruh rekening PNS berkumpul, lalu
   // seluruh rekening PPPK — bukan berselang-seling seperti urutan kode aslinya.
-  return rows.sort(urutGolonganLaluKode)
+  return { rows: rows.sort(urutGolonganLaluKode), bonusPool }
 }
 
-export function hitungProyeksiAkhir(data, { persen } = {}) {
+// Kebutuhan riil satu dinas/rekening sampai Desember, dihitung dua basis:
+//   'rumus' = realisasi + proyeksi dari tren SP2D (r.proyeksi, sudah basis
+//             rata/tertinggi-aware dari hitungProyeksiGaji) — INI DEFAULT,
+//             perilakunya persis sama dengan sebelum basis sim ditambahkan.
+//   'sim'   = realisasi + isian Sim Gaji × sisa bulan. Rekening yang belum
+//             diisi jatuh balik ke rataRata (BUKAN 0) — supaya kantong-pooling
+//             tetap punya kebutuhan utuh sekabupaten walau isian baru sebagian.
+// Dipisah jadi fungsi privat `hitungSatuBasis` supaya algoritma kantong-
+// pooling-nya (yang sudah teruji) dipakai ulang APA ADANYA oleh kedua basis —
+// yang beda cuma kebutuhan mana yang dimasukkan. `hitungProyeksiAkhir` di
+// bawah memanggilnya dua kali lalu menggabungkan hasilnya jadi satu tree.
+function hitungSatuBasis(data, { persen, tambahanFix } = {}, sumberKebutuhan = 'rumus') {
   const p = Number(persen)
   const persenCadangan = Number.isFinite(p) && p >= 0 ? p : DEFAULT_PERSEN_CADANGAN
   const rate = persenCadangan / 100
+  const t = Number(tambahanFix)
+  const tambahanFixRp = Number.isFinite(t) && t >= 0 ? t : DEFAULT_TAMBAHAN_FIX
+  const bulanSisa = num(data.bulanSisa)
+  const pakaiSim = sumberKebutuhan === 'sim'
+  const kebutuhanRekening = (r) => pakaiSim
+    ? num(r.sp2d) + (r.sim != null ? r.sim : num(r.rataRata)) * bulanSisa
+    : num(r.sp2d) + num(r.proyeksi)
   const labelPeta = petaLabelGolongan(data.skpd || [])
   // Seluruh golongan yang muncul di data manapun — dipakai supaya tiap dinas
   // selalu punya entri PNS *dan* PPPK (nol kalau memang tidak ada), bukan cuma
@@ -168,7 +231,11 @@ export function hitungProyeksiAkhir(data, { persen } = {}) {
     .sort((a, b) => String(a).localeCompare(String(b)))
 
   const baris = (data.skpd || []).map(s => {
-    const kebutuhan = bulat(num(s.sp2d) + num(s.proyeksi))
+    const kebutuhan = bulat(
+      pakaiSim
+        ? (s.rekening || []).reduce((a, r) => a + kebutuhanRekening(r), 0)
+        : num(s.sp2d) + num(s.proyeksi)
+    )
     return {
       kodeSkpd: s.kodeSkpd,
       namaSkpd: s.namaSkpd,
@@ -239,11 +306,20 @@ export function hitungProyeksiAkhir(data, { persen } = {}) {
   // tetap kelihatan, bukan disamarkan jadi pas.
   if (faktorPotong > 0 && !defisitRiil) rapikanPembulatan(aktif, kantong)
 
+  let totalTambahanFix = 0
   for (const b of baris) {
+    // bagiKeRekening dipanggil DULU supaya bonusPool-nya diketahui sebelum
+    // b.alokasi dan turunannya (pergeseran/cadanganAkhir/persenAkhir) dihitung —
+    // kalau kebalik, ringkasan tingkat dinas akan tertinggal (belum termasuk
+    // bonus) sementara rekeningnya sendiri sudah termasuk, dua-duanya jadi
+    // tidak sinkron.
+    const { rows, bonusPool } = bagiKeRekening(b, tambahanFixRp, kebutuhanRekening)
+    b.rekening = rows
+    b.alokasi += bonusPool
+    totalTambahanFix += bonusPool
     b.pergeseran = b.alokasi - b.pagu
     b.cadanganAkhir = b.alokasi - b.kebutuhan
     b.persenAkhir = b.kebutuhan > 0 ? (b.cadanganAkhir / b.kebutuhan) * 100 : 0
-    b.rekening = bagiKeRekening(b)
     b.golongan = kelompokGolongan(b.rekening, labelPeta, canonicalGol)
     b.rekeningTambah = b.rekening.filter(r => r.pergeseran > 0).length
     b.rekeningTanpaRealisasi = b.rekening.filter(r => r.tanpaRealisasi).length
@@ -304,6 +380,12 @@ export function hitungProyeksiAkhir(data, { persen } = {}) {
     // Persentase cadangan yang benar-benar kebagian setelah dipangkas.
     persenAkhir: persenCadangan * (1 - faktorPotong),
     faktorPotong,
+    // Tambahan fix Pembulatan/Tunjangan Khusus — FLAT, tidak ikut dipangkas
+    // proporsional seperti acress, dan tidak masuk hitungan kelebihan/faktorPotong
+    // di atas (yang murni soal kebutuhan+acress). Efeknya baru kelihatan di
+    // totalAlokasi/sisaKantong di bawah, setelah ditambahkan per dinas.
+    tambahanFix: tambahanFixRp,
+    totalTambahanFix,
     kantong,
     paguTerkunci,
     totalPagu: kantong + paguTerkunci,
@@ -330,4 +412,107 @@ export function hitungProyeksiAkhir(data, { persen } = {}) {
     // Rekap PNS vs PPPK (atau golongan apa pun yang ada di awalan yang dipakai).
     golongan: kelompokGolongan(rekening, labelPeta, canonicalGol),
   }
+}
+
+// Menempelkan angka satu golongan/rekening sisi Sim ke objek sisi Rumus yang
+// sepadan (dicari lewat `kunci`/`kodeRekening`) — dipakai gabungkanBasis di
+// tiga level (top, per-dinas, top lintas-dinas) lewat bentuk peta yang sama.
+function tempelGolongan(gRumus, petaSim) {
+  const gSim = petaSim.get(gRumus.kunci)
+  return {
+    ...gRumus,
+    kebutuhanSim: gSim?.kebutuhan ?? 0,
+    alokasiSim: gSim?.alokasi ?? 0,
+    pergeseranSim: gSim?.pergeseran ?? 0,
+    cadanganAkhirSim: gSim?.cadanganAkhir ?? 0,
+    tambahanFixSim: gSim?.tambahanFix ?? 0,
+  }
+}
+function tempelRekening(rRumus, petaSim) {
+  const rSim = petaSim.get(rRumus.kodeRekening)
+  return {
+    ...rRumus,
+    kebutuhanSim: rSim?.kebutuhan ?? 0,
+    alokasiSim: rSim?.alokasi ?? 0,
+    pergeseranSim: rSim?.pergeseran ?? 0,
+    cadanganAkhirSim: rSim?.cadanganAkhir ?? 0,
+    tambahanFixSim: rSim?.tambahanFix ?? 0,
+  }
+}
+
+// Menggabungkan hasil hitungSatuBasis('rumus') dan hitungSatuBasis('sim')
+// jadi SATU tree: field sisi rumus dipertahankan nama & maknanya PERSIS
+// seperti hitungProyeksiAkhir versi lama (`alokasi`, `pergeseran`,
+// `cadanganAkhir`, `persenAkhir`, dst — konsumen yang sudah ada, mis. tab
+// Usulan Alokasi, tidak perlu ganti nama field), field sisi sim ditempel
+// sebagai sibling berakhiran "Sim" di level yang sama (top-level, per-dinas,
+// per-golongan, per-rekening) — bukan pohon terpisah, supaya web/Excel bisa
+// baca satu baris/satu sel untuk dua sisi sekaligus, bukan mencocokkan dua
+// array sendiri-sendiri.
+//
+// `rumus` dan `sim` berasal dari `data.skpd` yang SAMA, jadi urutan skpd/
+// rekening di keduanya identik — dicocokkan lewat kode, bukan indeks, supaya
+// tetap benar walau salah satu basis menyaring/mengurutkan beda suatu saat.
+function gabungkanBasis(rumus, sim) {
+  const golLookup = (arr) => new Map((arr || []).map(g => [g.kunci, g]))
+  const rekLookup = (arr) => new Map((arr || []).map(r => [r.kodeRekening, r]))
+
+  const skpdSimByKode = new Map((sim.skpd || []).map(s => [s.kodeSkpd, s]))
+  const skpd = (rumus.skpd || []).map(bRumus => {
+    const bSim = skpdSimByKode.get(bRumus.kodeSkpd)
+    const petaRekSim = rekLookup(bSim?.rekening)
+    const petaGolSim = golLookup(bSim?.golongan)
+    return {
+      ...bRumus,
+      kebutuhanSim: bSim?.kebutuhan ?? 0,
+      alokasiSim: bSim?.alokasi ?? 0,
+      pergeseranSim: bSim?.pergeseran ?? 0,
+      cadanganAkhirSim: bSim?.cadanganAkhir ?? 0,
+      persenAkhirSim: bSim?.persenAkhir ?? 0,
+      rekening: (bRumus.rekening || []).map(r => tempelRekening(r, petaRekSim)),
+      golongan: (bRumus.golongan || []).map(g => tempelGolongan(g, petaGolSim)),
+    }
+  })
+
+  const rekening = (rumus.rekening || []).map(r => tempelRekening(r, rekLookup(sim.rekening)))
+  const golongan = (rumus.golongan || []).map(g => tempelGolongan(g, golLookup(sim.golongan)))
+
+  return {
+    ...rumus,
+    skpd,
+    rekening,
+    golongan,
+    // Ringkasan sisi Sim Gaji — nama field selalu diakhiri "Sim" supaya jelas
+    // bedanya dari field rumus di atas, walau makna & satuannya sama persis.
+    // Bisa beda dari sisi rumus kalau kantongnya sempat ketat (faktorPotongSim
+    // ≠ faktorPotong) — itu bukan bug, basis kebutuhannya memang beda.
+    persenAkhirSim: sim.persenAkhir,
+    faktorPotongSim: sim.faktorPotong,
+    tambahanFixSim: sim.tambahanFix,
+    totalTambahanFixSim: sim.totalTambahanFix,
+    kantongSim: sim.kantong,
+    paguTerkunciSim: sim.paguTerkunci,
+    totalKebutuhanSim: sim.totalKebutuhan,
+    totalCadanganSim: sim.totalCadangan,
+    totalIdealSim: sim.totalIdeal,
+    kelebihanSim: sim.kelebihan,
+    disebarSim: sim.disebar,
+    defisitRiilSim: sim.defisitRiil,
+    cukupSim: sim.cukup,
+    totalAlokasiSim: sim.totalAlokasi,
+    totalAlokasiAktifSim: sim.totalAlokasiAktif,
+    totalCadanganAkhirSim: sim.totalCadanganAkhir,
+    sisaKantongSim: sim.sisaKantong,
+    pergeseranMasukSim: sim.pergeseranMasuk,
+    pergeseranKeluarSim: sim.pergeseranKeluar,
+    jumlahTambahSim: sim.jumlahTambah,
+    jumlahKurangiSim: sim.jumlahKurangi,
+    jumlahTerkunciSim: sim.jumlahTerkunci,
+  }
+}
+
+export function hitungProyeksiAkhir(data, opts = {}) {
+  const rumus = hitungSatuBasis(data, opts, 'rumus')
+  const sim = hitungSatuBasis(data, opts, 'sim')
+  return gabungkanBasis(rumus, sim)
 }

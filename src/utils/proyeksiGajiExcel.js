@@ -172,15 +172,17 @@ function judul(ws, teks, kolomTerakhir, opsi = {}) {
 }
 
 // Baris "label ... : nilai" — label di A:B (digabung), nilai di kolom C.
-function barisAngka(ws, label, nilai, keterangan) {
+// `opsi.fill`/`opsi.numFmt` dipakai kalau selnya bukan angka turunan biasa
+// (HIJAU) tapi isian yang boleh diubah pemakai (KUNING), mis. sel Acress global.
+function barisAngka(ws, label, nilai, keterangan, opsi = {}) {
   const row = ws.addRow([label, null, nilai, keterangan || null])
   ws.mergeCells(row.number, 1, row.number, 2)
   row.getCell(1).font = { bold: true, size: 10 }
   const sel = row.getCell(3)
   sel.font = { bold: true, size: 11 }
-  sel.numFmt = FMT_DESIMAL
+  sel.numFmt = opsi.numFmt || FMT_DESIMAL
   sel.alignment = { horizontal: 'center' }
-  sel.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HIJAU } }
+  sel.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opsi.fill || HIJAU } }
   sel.border = garis()
   if (keterangan) row.getCell(4).font = { size: 9, italic: true, color: { argb: 'FF98A2B3' } }
   return row
@@ -284,17 +286,6 @@ const RINCIAN_SIM = [
   { cocok: /tunjangan\s+keluarga/i, rincian: ['Tunjangan Istri', 'Tunjangan Anak'] },
 ]
 
-// Keterangan kenapa satu baris pantas/tidak pantas dicurigai. Deviasi besar di
-// rekening yang pembaginya cuma pinjaman dari dinas bukan bukti rumusnya salah —
-// bahan bakunya yang memang belum cukup.
-function catatanBanding(r) {
-  const catatan = []
-  if (r.dibayarPerkiraan) catatan.push('pembagi pinjam dari laju dinas')
-  if (r.simRincian) catatan.push(`Sim Gaji = ${Object.keys(r.simRincian).join(' + ')}`)
-  if (!r.rataRata) catatan.push('belum ada realisasi — tak bisa dibanding')
-  return catatan.length ? catatan.join('; ') : null
-}
-
 function rincianSim(namaRekening) {
   return RINCIAN_SIM.find(r => r.cocok.test(String(namaRekening || '')))?.rincian || null
 }
@@ -356,7 +347,7 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
 
   // Peta sub rincian objek -> label golongan (00001 -> PNS, 00002 -> PPPK).
   // Dipakai semua sheet tingkat rekening supaya namanya seragam.
-  // Keterangan asal isian SIM Gaji, dipakai judul sheet BANDING SIM.
+  // Keterangan asal isian SIM Gaji, dipakai judul sheet PROYEKSI AKHIR & AKHIR REKENING.
   const simInfo = data.simInfo || {}
   const simLabel = simInfo.bulan
     ? `${NAMA_BULAN[simInfo.bulan]} ${tahun} \u00b7 ${simInfo.dinas || 0} dari ${simInfo.totalDinas || 0} unit terisi`
@@ -945,118 +936,33 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
     ws.getColumn('E').numFmt = FMT_DESIMAL
   }
 
-  // ---- Sheet BANDING SIM: angka rumus vs angka SIM Gaji ----
-  //
-  // Inti pertanyaannya: kalau proyeksi ini memakai tebakan dari realisasi SP2D,
-  // seberapa jauh melesetnya dari angka SIM Gaji yang sebenarnya? Sheet ini
-  // hanya muncul kalau sudah ada isian SIM Gaji yang tersimpan.
-  //
-  // Pembandingnya kolom Rata²/Bln (= realisasi ÷ berapa kali dibayar), bukan
-  // kolom dasar proyeksi — Rata²/Bln adalah "nilai satu kali bayar", satuan yang
-  // sama dengan "Sim Gaji /Bln". Dasar proyeksi ikut berubah kalau pemakai
-  // memilih basis "tertinggi", sehingga tidak layak jadi patokan tetap.
-  const barisBanding = data.skpd.flatMap(s =>
-    (s.rekening || []).filter(r => r.sim != null).map(r => ({ s, r }))
-  )
-
-  if (barisBanding.length) {
-    const ws = wb.addWorksheet('BANDING SIM', { views: [{ state: 'frozen', xSplit: 2, ySplit: 6 }] })
-    const KOLOM = [
-      { header: 'Kode SKPD', width: 22 },
-      { header: 'Nama SKPD', width: 34 },
-      { header: 'Kode Rek', width: 21 },
-      { header: 'Nama Rekening', width: 40 },
-      { header: 'Rata\u00b2/Bln\n(Rumus)', width: 18 },
-      { header: 'Sim Gaji /Bln', width: 18 },
-      { header: 'Selisih /Bln\n(Sim \u2212 Rumus)', width: 18 },
-      { header: 'Deviasi', width: 11 },
-      { header: `Kebutuhan ${bulanSisa} Bln\n(Rumus)`, width: 18 },
-      { header: `Kebutuhan ${bulanSisa} Bln\n(Sim Gaji)`, width: 18 },
-      { header: 'Selisih Kebutuhan', width: 18 },
-      { header: 'Catatan', width: 26 },
-    ]
-    const KOL = KOLOM.length
-
-    judul(ws, 'BANDING RUMUS vs SIM GAJI', KOL, { size: 12, height: 20 })
-    judul(ws, `TA ${tahun} \u00b7 Rekening ${prefix}* \u00b7 Sim Gaji ${simLabel} \u00b7 Rumus dari ${labelRealisasi}`, KOL,
-      { bold: false, size: 10, color: 'FF667085' })
-    judul(ws,
-      'Deviasi = Sim Gaji \u00f7 Rata\u00b2/Bln \u2212 1. Positif berarti rumusnya KERENDAHAN (kebutuhan sebenarnya lebih besar). ' +
-      'Baris merah = melesetnya di atas 5%, kuning tua = 2\u20135%. Hanya rekening yang kolom Sim Gaji-nya sudah diisi yang ikut di sini.',
-      KOL, { bold: false, size: 9, color: 'FF98A2B3' })
-    ws.addRow([])
-
-    const header = ws.addRow(KOLOM.map(k => k.header))
-    styleHeader(header, KOL)
-    KOLOM.forEach((k, i) => { ws.getColumn(i + 1).width = k.width })
-
-    const barisPertama = header.number + 1
-    for (const { s, r } of barisBanding) {
-      const n = ws.rowCount + 1
-      const row = ws.addRow([
-        s.kodeSkpd, s.namaSkpd,
-        r.kodeRekening, r.namaRekening,
-        r.rataRata,
-        r.sim,
-        { formula: `F${n}-E${n}` },
-        { formula: `IFERROR(F${n}/E${n}-1,"")` },
-        { formula: `E${n}*${bulanSisa}` },
-        { formula: `F${n}*${bulanSisa}` },
-        { formula: `J${n}-I${n}` },
-        catatanBanding(r),
-      ])
-      row.font = { size: 10 }
-      for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
-      row.getCell(1).font = { size: 10, name: 'Consolas' }
-      row.getCell(3).font = { size: 10, name: 'Consolas' }
-      row.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
-      row.getCell(8).alignment = { horizontal: 'center' }
-
-      const dev = Math.abs(r.deviasiSim ?? 0)
-      if (r.deviasiSim != null && dev > 0.05) {
-        tandaiKurang(row, KOL, { lewati: [6], kolomTeks: [8, 12] })
-      } else if (r.deviasiSim != null && dev >= 0.02) {
-        for (let c = 1; c <= KOL; c++) {
-          if (c === 6) continue
-          row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: AMBER } }
-        }
-        row.getCell(8).font = { size: 10, bold: true, color: { argb: AMBER_TEKS } }
-      }
-    }
-
-    const barisTerakhir = ws.rowCount
-    const n = barisTerakhir + 1
-    const jum = (kol) => `SUM(${kol}${barisPertama}:${kol}${barisTerakhir})`
-    const total = ws.addRow([
-      'TOTAL', `${barisBanding.length} rekening terisi`, null, null,
-      { formula: jum('E') },
-      { formula: jum('F') },
-      { formula: `F${n}-E${n}` },
-      { formula: `IFERROR(F${n}/E${n}-1,"")` },
-      { formula: jum('I') },
-      { formula: jum('J') },
-      { formula: `J${n}-I${n}` },
-      null,
-    ])
-    styleBarisTotal(total, KOL)
-    total.getCell(8).alignment = { horizontal: 'center' }
-
-    for (const kol of ['E', 'F', 'I', 'J']) ws.getColumn(kol).numFmt = FMT_RP
-    for (const kol of ['G', 'K']) ws.getColumn(kol).numFmt = FMT_RP_MERAH
-    ws.getColumn('H').numFmt = '+0.0%;-0.0%;0.0%'
-    ws.autoFilter = { from: { row: header.number, column: 1 }, to: { row: barisTerakhir, column: KOL } }
-  }
-
-  // ---- Sheet PROYEKSI AKHIR: usulan alokasi per dinas ----
+  // ---- Sheet PROYEKSI AKHIR: usulan alokasi per dinas, Rumus & Sim Gaji ----
   //
   // Susunan kolomnya sengaja mengikuti urutan hitungan supaya bisa ditelusuri
   // dari kiri ke kanan: Pagu → Realisasi → Rata² → Kebutuhan → Acress → Usulan →
-  // Pergeseran. Kolom Acress (%) berlatar KUNING = boleh diubah; begitu diubah,
-  // Acress (Rp), Usulan, dan Pergeseran ikut terhitung ulang sendiri.
+  // Pergeseran (Rumus), lalu diulang sekali lagi dari basis Sim Gaji (kolom
+  // N ke atas). Kolom Acress (%) tiap baris adalah RUMUS yang menunjuk ke satu
+  // sel Acress global (baris "Acress (%)" di atas tabel) — ubah sekali di situ,
+  // seluruh baris di sheet ini DAN sheet AKHIR REKENING ikut terhitung ulang.
+  // Selnya sendiri tetap boleh ditimpa manual per baris kalau perlu pengecualian.
+  //
+  // Kolom N–S (sisi Sim Gaji) sengaja BUKAN rumus live seperti sisi Rumus —
+  // kebutuhan sisi Sim per golongan itu campuran: sebagian rekening pakai
+  // isian Sim Gaji, sisanya (yang belum diisi) jatuh balik ke rata² (lihat
+  // hitungSatuBasis di proyeksiAkhir.js) — campurannya tidak bisa ditelusuri
+  // balik dari satu angka agregat lewat rumus Excel sederhana. Angkanya tetap
+  // dari perhitungan kantong-pooling yang SAMA persis dengan sisi Rumus (bukan
+  // aproksimasi terpisah), cuma ditulis sebagai nilai jadi, bukan rumus. Rincian
+  // per rekening yang betulan live ada di sheet AKHIR REKENING.
   const akhir = data.akhir
+  // Nomor baris sel Acress & Tambahan Fix global — diisi di bawah, dipakai lagi
+  // oleh sheet AKHIR REKENING lewat rujukan lintas sheet ('PROYEKSI AKHIR'!$C$<baris>).
+  let barisAcressGlobal = null
+  let barisAcressSimGlobal = null
+  let barisTambahanFixGlobal = null
   const labelBasis = data.basis === 'tertinggi' ? 'Tertinggi Sekali Bayar' : 'Rata² Tiap Bayar'
   if (akhir) {
-    const ws = wb.addWorksheet('PROYEKSI AKHIR', { views: [{ state: 'frozen', xSplit: 2, ySplit: 9 }] })
+    const ws = wb.addWorksheet('PROYEKSI AKHIR', { views: [{ state: 'frozen', xSplit: 2, ySplit: 12 }] })
     const KOLOM = [
       { header: 'No', width: 5 },
       { header: 'Nama SKPD', width: 38 },
@@ -1067,28 +973,40 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       { header: `Kebutuhan ${bulanSisa} Bln\n(${rentangSisa})`, width: 18 },
       { header: 'Kebutuhan s.d. Des\n(Realisasi + Sisa Bln)', width: 19 },
       { header: 'Acress\n(%, boleh diubah)', width: 13 },
-      { header: 'Acress\n(Rp)', width: 17 },
+      { header: 'Acress + Tambahan Fix\n(Rp)', width: 19 },
       { header: 'Usulan\n(Kebutuhan + Acress)', width: 19 },
       { header: 'Pergeseran\n(Usulan − Pagu)', width: 19 },
       { header: 'Status', width: 11 },
+      { header: 'Sim Gaji /Bln\n(Σ yang terisi)', width: 18 },
+      { header: 'Kebutuhan s.d. Des\n(Sim Gaji)', width: 19 },
+      { header: 'Acress + Tambahan Fix (Sim)\n(Rp)', width: 19 },
+      { header: 'Usulan (Sim Gaji)\n(Kebutuhan + Acress)', width: 19 },
+      { header: 'Pergeseran (Sim Gaji)\n(Usulan − Pagu)', width: 19 },
+      { header: 'Selisih Usulan\n(Sim − Rumus)', width: 18 },
     ]
     const KOL = KOLOM.length
 
     judul(ws, 'PROYEKSI AKHIR — USULAN ALOKASI ANGGARAN GAJI SAMPAI TUTUP TAHUN', KOL, { size: 14, height: 22 })
-    judul(ws, `TA ${tahun} · Rekening ${prefix}* · Realisasi ${labelRealisasi} · dasar proyeksi: ${labelBasis}`, KOL,
+    judul(ws, `TA ${tahun} · Rekening ${prefix}* · Realisasi ${labelRealisasi} · dasar proyeksi: ${labelBasis} · Sim Gaji ${simLabel}`, KOL,
       { bold: false, size: 10, color: 'FF667085' })
     judul(ws,
       'Pagu gaji sekabupaten diperlakukan sebagai satu kantong. Tiap REKENING tiap dinas dijatah kebutuhan riilnya ' +
       `sampai Desember (realisasi + ${labelBasis.toLowerCase()} × ${bulanSisa} bulan), lalu ditambah acress. Kalau ` +
       'jumlahnya melebihi isi kantong, kekurangannya disebar ke SEMUA dinas dengan memangkas acress secara ' +
-      'proporsional — kebutuhan gajinya sendiri tidak pernah dipotong, jadi tidak ada dinas yang kehabisan gaji.',
+      'proporsional — kebutuhan gajinya sendiri tidak pernah dipotong, jadi tidak ada dinas yang kehabisan gaji. ' +
+      'Kebutuhan sisi Sim Gaji (kolom N ke kanan) dihitung ULANG lewat algoritma kantong-pooling yang PERSIS sama, ' +
+      'cuma kebutuhannya dari isian Sim Gaji (rekening yang belum diisi jatuh balik ke rata²) — bukan aproksimasi ' +
+      'terpisah, jadi kedua sisi selalu bisa dibandingkan apa adanya.',
       KOL, { bold: false, size: 9, color: 'FF667085' })
     judul(ws,
       'Kolom "Dibayar (kali)" adalah pembagi milik tiap rekening, dijumlahkan ke tingkat dinas di sini: gaji pokok ' +
       `ikut terbayar di bulan THR dan gaji ke-13 (±${Math.round(data.bulanGajiTerbayarTotal)} kali), sedangkan iuran ` +
       `BPJS/JKK/JKM hanya sekali sebulan (${bulanTerakhir || '—'} kali). Rinciannya ada di sheet AKHIR REKENING. ` +
       'Dikelompokkan per golongan pegawai — blok PNS dulu (seluruh dinas), baru blok PPPK (seluruh dinas), masing-masing ' +
-      'ditutup baris SUBTOTAL. Acress % boleh diubah per baris.',
+      'ditutup baris SUBTOTAL. Kolom Acress (%) tiap baris terhubung ke satu sel Acress global di bawah ini — ubah ' +
+      'sekali di situ, seluruh baris ikut berubah. Boleh juga ditimpa manual per baris untuk pengecualian. Kolom ' +
+      '"Acress + Tambahan Fix (Rp)" ikut memuat tambahan flat untuk rekening Pembulatan Gaji & Tunjangan PPh/Tunjangan ' +
+      'Khusus, dari sel Tambahan Fix global di bawah — dua rekening itu paling sering kurang walau sudah dapat acress.',
       KOL, { bold: false, size: 9, color: 'FF98A2B3' })
     judul(ws, ceritaAkhir(akhir), KOL, {
       bold: true, size: 10, height: 18,
@@ -1100,10 +1018,39 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
         ? `${akhir.jumlahTerkunci} dinas tanpa dasar hitung dikunci, pagunya ${rupiah(akhir.paguTerkunci)}`
         : 'seluruh dinas ikut dihitung ulang')
     barisKantong.getCell(3).numFmt = FMT_RP
-    barisAngka(ws, 'Acress yang benar-benar terpakai', akhir.persenAkhir,
+    // Sel Acress global — KUNING (boleh diubah), semua baris Acress (%) di
+    // sheet ini dan di AKHIR REKENING adalah rumus yang menunjuk ke sel ini.
+    // Nilai awalnya = acress yang benar-benar terpakai (sudah dipangkas kalau
+    // kantongnya sempat kurang), supaya angka yang tercetak sama persis dengan
+    // yang terlihat di aplikasi sebelum diubah-ubah lagi di sini.
+    const rowAcressGlobal = barisAngka(ws, 'Acress (%) — ubah di sini, semua baris ikut berubah', akhir.persenAkhir / 100,
       akhir.faktorPotong > 0
-        ? `persen — dipangkas dari ${angkaPersen(akhir.persenCadangan)} untuk menutup kekurangan ${rupiah(akhir.kelebihan)}`
-        : 'persen — tidak perlu dipangkas, pagu mencukupi')
+        ? `awalnya dipangkas dari ${angkaPersen(akhir.persenCadangan)} untuk menutup kekurangan ${rupiah(akhir.kelebihan)} — boleh diubah lagi`
+        : 'nilai awal dari pengaturan Acress di aplikasi — boleh diubah bebas',
+      { fill: KUNING, numFmt: '0.00%' })
+    barisAcressGlobal = rowAcressGlobal.number
+    const REF_ACRESS = `$C$${barisAcressGlobal}`
+    // Sel Acress (Sim) — sama seperti Acress rumus, tapi dipakai LIVE cuma di
+    // sheet AKHIR REKENING (baris per-rekening, tanpa masalah campuran isian
+    // yang bikin kolom N–S di sheet ini terpaksa berupa nilai jadi, bukan rumus).
+    const rowAcressSimGlobal = barisAngka(ws, 'Acress (%, Sim) — dipakai kolom Sim di sheet AKHIR REKENING', akhir.persenAkhirSim / 100,
+      akhir.faktorPotongSim > 0
+        ? `awalnya dipangkas dari ${angkaPersen(akhir.persenCadangan)} untuk menutup kekurangan sisi Sim — boleh diubah lagi`
+        : 'nilai awal dari pengaturan Acress di aplikasi, dihitung dari kebutuhan sisi Sim — boleh diubah bebas',
+      { fill: KUNING, numFmt: '0.00%' })
+    barisAcressSimGlobal = rowAcressSimGlobal.number
+    // Sel Tambahan Fix global — flat, ditempelkan di atas Acress khusus rekening
+    // Pembulatan Gaji & Tunjangan PPh/Tunjangan Khusus (dua rekening yang paling
+    // sering kurang walau sudah dapat acress). Dilipat ke kolom Acress (Rp) yang
+    // sudah ada, bukan kolom baru, supaya tidak perlu menomori ulang seluruh rumus.
+    // Dipakai bersama oleh sisi Rumus DAN sisi Sim — nilainya sendiri (bukan
+    // hasil pooling) sama untuk kedua basis.
+    const rowTambahanFixGlobal = barisAngka(ws,
+      'Tambahan Fix (Rp) — Pembulatan & Tunj. Khusus, ubah di sini semua ikut berubah', akhir.tambahanFix,
+      'flat per rekening yang cocok — tidak ikut dipangkas proporsional kalau kantong kurang, sama untuk sisi Rumus & Sim',
+      { fill: KUNING, numFmt: FMT_RP })
+    barisTambahanFixGlobal = rowTambahanFixGlobal.number
+    const REF_TAMBAHAN = `$C$${barisTambahanFixGlobal}`
 
     const header = ws.addRow(KOLOM.map(k => k.header))
     styleHeader(header, KOL)
@@ -1123,17 +1070,34 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
         const g = s.golongan.find(gg => gg.kunci === kunci)
         if (!g) return
         const n = ws.rowCount + 1
+        // Tambahan Fix dilipat ke kolom Acress (Rp) — flat per rekening yang
+        // cocok (Pembulatan/Tunjangan Khusus) di golongan-dinas ini, bukan
+        // proporsional seperti acress. `g.tambahanFixJumlah` sudah dihitung
+        // server-side; jumlahnya sendiri tidak ikut jadi rumus (struktural,
+        // bukan isian), hanya nilai Rp-nya yang menunjuk ke sel global.
+        const tambahanTerm = g.tambahanFixJumlah > 0 ? `+${g.tambahanFixJumlah}*${REF_TAMBAHAN}` : ''
         const row = ws.addRow([
           i + 1, s.namaSkpd, g.pagu, g.sp2d,
           g.dibayar || null,
           g.perBulanRutin,
           { formula: `F${n}*${bulanSisa}` },
           { formula: `D${n}+G${n}` },
-          s.terkunci ? null : akhir.persenAkhir / 100,
-          { formula: `IF(I${n}="",0,H${n}*I${n})` },
+          // `result` = nilai cache — dipakai pembaca yang tidak mengevaluasi rumus
+          // (mis. pembacaan balik file ini sendiri); Excel tetap menghitung ulang
+          // sungguhan begitu filenya dibuka atau sel Acress globalnya diubah.
+          s.terkunci ? null : { formula: REF_ACRESS, result: akhir.persenAkhir / 100 },
+          { formula: `IF(I${n}="",0,H${n}*I${n})${tambahanTerm}`, result: g.cadanganAkhir },
           s.terkunci ? g.pagu : { formula: `H${n}+J${n}` },
           { formula: `K${n}-C${n}` },
           { formula: s.terkunci ? '"DIKUNCI"' : `IF(L${n}>0,"TAMBAH",IF(L${n}<0,"KURANGI","TETAP"))` },
+          // Sisi Sim Gaji — nilai jadi (lihat catatan di atas KOLOM soal kenapa
+          // bukan rumus live di level agregat golongan ini).
+          g.simJumlahTerisi > 0 ? g.simTotal : null,
+          g.kebutuhanSim,
+          g.cadanganAkhirSim,
+          g.alokasiSim,
+          g.pergeseranSim,
+          { formula: `Q${n}-K${n}` },
         ])
         row.font = { size: 10 }
         for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
@@ -1156,6 +1120,8 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
         null, // acress tiap baris bisa berbeda kalau diubah manual
         { formula: jumGol('J') }, { formula: jumGol('K') }, { formula: jumGol('L') },
         { formula: `IF(L${ns}>0,"TAMBAH",IF(L${ns}<0,"KURANGI","TETAP"))` },
+        { formula: jumGol('N') }, { formula: jumGol('O') }, { formula: jumGol('P') },
+        { formula: jumGol('Q') }, { formula: jumGol('R') }, { formula: jumGol('S') },
       ])
       styleSubtotal(sub, KOL)
       subtotalGolAkhir.push(sub.number)
@@ -1171,13 +1137,16 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
         { formula: jum('F') }, { formula: jum('G') }, { formula: jum('H') },
         null, // acress tiap baris bisa berbeda kalau diubah manual
         { formula: jum('J') }, { formula: jum('K') }, { formula: jum('L') }, null,
+        { formula: jum('N') }, { formula: jum('O') }, { formula: jum('P') },
+        { formula: jum('Q') }, { formula: jum('R') }, { formula: jum('S') },
       ])
       styleBarisTotal(total, KOL)
       const catatan = ws.addRow([
         null,
         akhir.cukup
           ? 'Σ Pergeseran harus 0 (yang ditambah = yang ditarik) — usulan ini cukup dengan pergeseran antar dinas, tanpa tambahan anggaran. ' +
-            'Kalau kolom Acress (%) diubah naik, angka itu akan jadi positif: sebesar itulah tambahan anggaran yang diperlukan.'
+            'Kalau kolom Acress (%) diubah naik, angka itu akan jadi positif: sebesar itulah tambahan anggaran yang diperlukan. ' +
+            'Kolom "Selisih Usulan (Sim − Rumus)" positif berarti sisi Sim Gaji minta lebih banyak dari sisi Rumus.'
           : `Σ Pergeseran = ${rupiah(akhir.defisitRiil)} di atas pagu tersedia — sebesar itulah tambahan anggaran yang masih dibutuhkan.`,
       ])
       ws.mergeCells(catatan.number, 2, catatan.number, KOL)
@@ -1186,18 +1155,32 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       aturanSelisihMerah(ws, 'L', barisPertama, total.number)
     }
 
-    for (const kol of ['C', 'D', 'F', 'G', 'H', 'J', 'K']) ws.getColumn(kol).numFmt = FMT_RP
+    for (const kol of ['C', 'D', 'F', 'G', 'H', 'J', 'K', 'N', 'O', 'P', 'Q']) ws.getColumn(kol).numFmt = FMT_RP
     ws.getColumn('E').numFmt = FMT_DESIMAL
     ws.getColumn('I').numFmt = '0.00%'
     ws.getColumn('L').numFmt = FMT_PERGESERAN
+    ws.getColumn('R').numFmt = FMT_PERGESERAN
+    ws.getColumn('S').numFmt = FMT_PERGESERAN
   }
 
-  // ---- Sheet AKHIR REKENING: rincian usulan sampai tingkat rekening ----
+  // ---- Sheet AKHIR REKENING: rincian usulan sampai tingkat rekening, Rumus & Sim Gaji ----
   //
   // Bentuk datar (satu baris = satu dinas × satu rekening), dikelompokkan per
   // golongan pegawai dulu — blok PNS berisi SELURUH dinas × rekening, baru blok
   // PPPK berisi SELURUH dinas × rekening. Kolomnya sama dengan sheet PROYEKSI
-  // AKHIR, jadi acress di sini pun boleh diubah per baris.
+  // AKHIR, dan kolom Acress (%) di sini menunjuk ke SEL YANG SAMA (lintas
+  // sheet) dengan sel Acress global di PROYEKSI AKHIR — ubah salah satu, kedua
+  // sheet ikut berubah bersamaan.
+  //
+  // Beda dengan sheet PROYEKSI AKHIR (yang kolom Sim-nya nilai jadi, lihat
+  // catatan di sana): di sini kolom Sim (P ke kanan) LIVE lewat rumus, karena
+  // satu baris = satu rekening — tidak ada masalah campuran isian per golongan.
+  // Rekening yang kolom Sim Gaji-nya kosong otomatis jatuh balik ke kolom
+  // "Kebutuhan s.d. Des" (Rumus) sebagai perkiraan, persis logika fallback di
+  // hitungSatuBasis (proyeksiAkhir.js).
+  const REF_ACRESS_LINTAS = `'PROYEKSI AKHIR'!$C$${barisAcressGlobal}`
+  const REF_ACRESS_SIM_LINTAS = `'PROYEKSI AKHIR'!$C$${barisAcressSimGlobal}`
+  const REF_TAMBAHAN_LINTAS = `'PROYEKSI AKHIR'!$C$${barisTambahanFixGlobal}`
   if (akhir) {
     const ws = wb.addWorksheet('AKHIR REKENING', { views: [{ state: 'frozen', xSplit: 2, ySplit: 7 }] })
     const KOLOM = [
@@ -1212,28 +1195,41 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       { header: `Kebutuhan ${bulanSisa} Bln`, width: 17 },
       { header: 'Kebutuhan s.d. Des', width: 18 },
       { header: 'Acress\n(%, boleh diubah)', width: 13 },
-      { header: 'Acress\n(Rp)', width: 16 },
+      { header: 'Acress + Tambahan Fix\n(Rp)', width: 19 },
       { header: 'Usulan\n(Kebutuhan + Acress)', width: 19 },
       { header: 'Pergeseran\n(Usulan − Pagu)', width: 18 },
       { header: 'Catatan', width: 26 },
+      { header: 'Sim Gaji /Bln', width: 18 },
+      { header: 'Selisih /Bln\n(Sim − Rumus)', width: 18 },
+      { header: 'Deviasi', width: 11 },
+      { header: 'Kebutuhan s.d. Des\n(Sim Gaji)', width: 18 },
+      { header: 'Acress (Sim)\n(%, boleh diubah)', width: 13 },
+      { header: 'Acress + Tambahan Fix (Sim)\n(Rp)', width: 19 },
+      { header: 'Usulan (Sim Gaji)\n(Kebutuhan + Acress)', width: 19 },
+      { header: 'Pergeseran (Sim Gaji)\n(Usulan − Pagu)', width: 19 },
+      { header: 'Selisih Usulan\n(Sim − Rumus)', width: 18 },
     ]
     const KOL = KOLOM.length
 
     judul(ws, 'USULAN ALOKASI PER REKENING (SELURUH SKPD)', KOL, { size: 12, height: 20 })
-    judul(ws, `TA ${tahun} · Rekening ${prefix}* · Realisasi ${labelRealisasi} · dasar proyeksi: ${labelBasis}`, KOL,
+    judul(ws, `TA ${tahun} · Rekening ${prefix}* · Realisasi ${labelRealisasi} · dasar proyeksi: ${labelBasis} · Sim Gaji ${simLabel}`, KOL,
       { bold: false, size: 10, color: 'FF667085' })
     judul(ws,
       'Satu baris = satu dinas × satu rekening. Dikelompokkan per golongan pegawai dulu — blok PNS berisi seluruh ' +
       'dinas, baru blok PPPK berisi seluruh dinas, masing-masing ditutup baris SUBTOTAL. Inilah lampiran usulan ' +
       'pergeserannya. Kolom "Dibayar (kali)" adalah pembagi rekening itu sendiri: iuran BPJS hanya sekali sebulan, ' +
-      'gaji pokok ikut terbayar di bulan THR dan gaji ke-13.',
+      'gaji pokok ikut terbayar di bulan THR dan gaji ke-13. Kolom Acress (%) dan Tambahan Fix menunjuk ke sel global ' +
+      'di sheet PROYEKSI AKHIR — ubah di situ, baris di sini ikut berubah juga. Tambahan Fix hanya menempel di baris ' +
+      'Pembulatan Gaji & Tunjangan PPh/Tunjangan Khusus.',
       KOL, { bold: false, size: 9, color: 'FF98A2B3' })
     judul(ws,
       `Jumlah baris: ${akhir.skpd.reduce((a, s) => a + s.rekening.length, 0)} · ` +
       `perlu ditambah: ${akhir.skpd.reduce((a, s) => a + s.rekening.filter(r => r.pergeseran > 0).length, 0)} rekening · ` +
       `pagunya ditarik: ${akhir.skpd.reduce((a, s) => a + s.rekening.filter(r => r.pergeseran < 0).length, 0)} rekening` +
       (akhir.golongan || []).map(g =>
-        ` │ ${g.label}: kebutuhan ${rupiah(g.kebutuhan)} + acress ${rupiah(g.cadanganAkhir)} = ${rupiah(g.alokasi)}`).join(''),
+        ` │ ${g.label}: kebutuhan ${rupiah(g.kebutuhan)} + acress ${rupiah(g.cadanganAkhir)} = ${rupiah(g.alokasi)}`).join('') +
+      '. Deviasi (kolom R) = Sim Gaji ÷ Rata²/Bln − 1. Baris merah = melesetnya di atas 5%, kuning tua = 2–5%. ' +
+      'Rekening yang belum diisi Sim Gaji, kolom Kebutuhan s.d. Des (Sim Gaji)-nya jatuh balik ke angka Rumus.',
       KOL, { bold: false, size: 9, color: 'FF98A2B3' })
 
     const barisSisa = barisAngka(ws, 'Bulan-gaji sisa', bulanSisa, rentangSisa)
@@ -1253,30 +1249,60 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
       for (const s of akhir.skpd) {
         for (const r of s.rekening.filter(r => r.golongan === kunci)) {
           const n = ws.rowCount + 1
+          // Satu baris = satu rekening, jadi cocok/tidaknya pola Tambahan Fix
+          // langsung dari r.tambahanFix/r.tambahanFixSim (sudah dihitung
+          // server-side) — bukan 0/1, tapi tetap dipakai sebagai penanda
+          // "tempel sekali" saja.
+          const tambahanTerm = r.tambahanFix ? `+${REF_TAMBAHAN_LINTAS}` : ''
+          const tambahanTermSim = r.tambahanFixSim ? `+${REF_TAMBAHAN_LINTAS}` : ''
           const row = ws.addRow([
             s.kodeSkpd, s.namaSkpd,
             r.kodeRekening, r.namaRekening,
             r.pagu, r.sp2d, r.dibayar || null, r.perBulanRutin,
             { formula: `H${n}*${REF_SISA}` },
             { formula: `F${n}+I${n}` },
-            s.terkunci ? null : akhir.persenAkhir / 100,
-            { formula: `IF(K${n}="",0,J${n}*K${n})` },
+            s.terkunci ? null : { formula: REF_ACRESS_LINTAS, result: akhir.persenAkhir / 100 },
+            { formula: `IF(K${n}="",0,J${n}*K${n})${tambahanTerm}`, result: r.cadanganAkhir },
             s.terkunci ? r.pagu : { formula: `J${n}+L${n}` },
             { formula: `M${n}-E${n}` },
             s.terkunci ? 'Dinas dikunci — tanpa dasar hitung'
               : r.tanpaRealisasi ? 'Belum pernah dibayar — pagu ditarik penuh'
               : r.dibayarPerkiraan ? 'Belum ada realisasi bulanan — pembagi dinas dipinjam'
               : null,
+            // Sisi Sim Gaji — LIVE, lihat catatan di atas KOLOM. Kolom Sim Gaji
+            // /Bln (P) boleh diubah manual untuk uji "bagaimana kalau nilainya
+            // segini" — kolom S ke kanan ikut terhitung ulang.
+            r.sim,
+            r.selisihSim,
+            r.deviasiSim,
+            { formula: `IF(P${n}="",J${n},F${n}+P${n}*${bulanSisa})`, result: r.kebutuhanSim },
+            s.terkunci ? null : { formula: REF_ACRESS_SIM_LINTAS, result: akhir.persenAkhirSim / 100 },
+            { formula: `IF(T${n}="",0,S${n}*T${n})${tambahanTermSim}`, result: r.cadanganAkhirSim },
+            s.terkunci ? r.pagu : { formula: `S${n}+U${n}` },
+            { formula: `V${n}-E${n}` },
+            { formula: `V${n}-M${n}` },
           ])
           row.font = { size: 10 }
           for (let c = 1; c <= KOL; c++) row.getCell(c).border = garis()
           row.getCell(1).font = { size: 10, name: 'Consolas' }
           row.getCell(3).font = { size: 10, name: 'Consolas' }
-          for (const c of [7, 11] ) row.getCell(c).alignment = { horizontal: 'center' }
+          for (const c of [7, 11, 18, 20]) row.getCell(c).alignment = { horizontal: 'center' }
           row.getCell(15).font = { size: 9, italic: true, color: { argb: 'FF98A2B3' } }
-          if (!s.terkunci) row.getCell(11).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
-          if (r.pergeseran > 0) tandaiTambah(row, KOL, { lewati: [11], kolomTeks: [14] })
+          if (!s.terkunci) {
+            row.getCell(11).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
+            row.getCell(20).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
+          }
+          row.getCell(16).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: KUNING } }
+          if (r.pergeseran > 0) tandaiTambah(row, KOL, { lewati: [11, 16, 20], kolomTeks: [14] })
           else if (s.terkunci) tandaiKunci(row, KOL)
+          // Deviasi Sim vs Rumus — cuma teks sel R yang ditandai, bukan seluruh
+          // baris, supaya tidak bentrok dengan warna baris pergeseran/kunci di atas.
+          const dev = Math.abs(r.deviasiSim ?? 0)
+          if (r.deviasiSim != null && dev > 0.05) {
+            row.getCell(18).font = { size: 10, bold: true, color: { argb: MERAH_TEKS } }
+          } else if (r.deviasiSim != null && dev >= 0.02) {
+            row.getCell(18).font = { size: 10, bold: true, color: { argb: AMBER_TEKS } }
+          }
         }
       }
 
@@ -1290,6 +1316,10 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
         null,
         { formula: jumGol('L') }, { formula: jumGol('M') }, { formula: jumGol('N') },
         null,
+        null, null, null,
+        { formula: jumGol('S') },
+        null,
+        { formula: jumGol('U') }, { formula: jumGol('V') }, { formula: jumGol('W') }, { formula: jumGol('X') },
       ])
       styleSubtotal(sub, KOL)
       subtotalGolRek.push(sub.number)
@@ -1306,16 +1336,26 @@ export async function buatWorkbookProyeksiGaji(data, opsi) {
         null,
         { formula: jum('L') }, { formula: jum('M') }, { formula: jum('N') },
         null,
+        null, null, null,
+        { formula: jum('S') },
+        null,
+        { formula: jum('U') }, { formula: jum('V') }, { formula: jum('W') }, { formula: jum('X') },
       ])
       styleBarisTotal(total, KOL)
       ws.autoFilter = { from: { row: header.number, column: 1 }, to: { row: barisTerakhir, column: KOL } }
       aturanSelisihMerah(ws, 'N', barisPertama, total.number)
+      aturanSelisihMerah(ws, 'W', barisPertama, total.number)
     }
 
-    for (const kol of ['E', 'F', 'H', 'I', 'J', 'L', 'M']) ws.getColumn(kol).numFmt = FMT_RP
+    for (const kol of ['E', 'F', 'H', 'I', 'J', 'L', 'M', 'P', 'S', 'U', 'V']) ws.getColumn(kol).numFmt = FMT_RP
     ws.getColumn('G').numFmt = FMT_DESIMAL
     ws.getColumn('K').numFmt = '0.00%'
     ws.getColumn('N').numFmt = FMT_PERGESERAN
+    ws.getColumn('Q').numFmt = FMT_RP_MERAH
+    ws.getColumn('R').numFmt = '+0.0%;-0.0%;0.0%'
+    ws.getColumn('T').numFmt = '0.00%'
+    ws.getColumn('W').numFmt = FMT_PERGESERAN
+    ws.getColumn('X').numFmt = FMT_PERGESERAN
   }
 
   // ---- Sheet _META: penanda supaya file ini bisa diunggah balik ----

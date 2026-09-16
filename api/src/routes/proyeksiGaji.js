@@ -495,7 +495,10 @@ router.get('/', async (c) => {
     prefix: c.req.query('prefix'),
     basis: c.req.query('basis'),
   })
-  hasil.akhir = hitungProyeksiAkhir(hasil, { persen: c.req.query('persen') })
+  hasil.akhir = hitungProyeksiAkhir(hasil, {
+    persen: c.req.query('persen'),
+    tambahanFix: c.req.query('tambahanFix'),
+  })
   return c.json(hasil)
 })
 

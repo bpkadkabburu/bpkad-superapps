@@ -44,6 +44,17 @@ function cariBaris(ws, kolom, nilai, dariBaris = 1) {
   return -1
 }
 
+// AKHIR REKENING satu baris = satu (dinas × rekening) — kode rekening SENDIRI
+// berulang di tiap dinas, jadi carinya harus dua kolom sekaligus (kode SKPD +
+// kode rekening), bukan cuma cariBaris(kolom C) yang berhenti di kecocokan
+// PERTAMA (dinas manapun yang kebetulan duluan).
+function cariBarisRekeningDinas(ws, kodeSkpd, kodeRekening) {
+  for (let n = 1; n <= ws.rowCount; n++) {
+    if (ws.getCell(`A${n}`).value === kodeSkpd && ws.getCell(`C${n}`).value === kodeRekening) return n
+  }
+  return -1
+}
+
 function cariSemuaBaris(ws, kolom, nilai) {
   const hasil = []
   for (let n = 1; n <= ws.rowCount; n++) {
@@ -165,14 +176,16 @@ cek('rekening berkumpul per golongan (rekap)',
   akhir.rekening.every((r, i) => i === 0 || r.golongan >= akhir.rekening[i - 1].golongan))
 cek('rekening berkumpul per golongan (tiap dinas)',
   akhir.skpd.every(s => s.rekening.every((r, i) => i === 0 || r.golongan >= s.rekening[i - 1].golongan)))
-// Akres menempel di tiap rekening, bukan dibagi rata menurut pagu.
+// Akres menempel di tiap rekening, bukan dibagi rata menurut pagu. Rekening
+// Pembulatan/Tunjangan Khusus sengaja dikecualikan sebesar tambahanFix-nya —
+// itu tempelan flat di luar acress, bukan bagian dari faktor proporsional ini.
 {
   const faktor = 1 + akhir.persenAkhir / 100
   const meleset = akhir.skpd.filter(s => !s.terkunci).flatMap(s =>
     s.rekening.filter(r => r.kebutuhan > 0 &&
-      Math.abs(r.alokasi - r.kebutuhan * faktor) > s.rekening.length + 1)
+      Math.abs((r.alokasi - r.tambahanFix) - r.kebutuhan * faktor) > s.rekening.length + 1)
       .map(r => `${s.kodeSkpd}/${r.kodeRekening}`))
-  cek(`cadangan ${akhir.persenAkhir.toFixed(3)}% menempel di tiap rekening`, meleset.length === 0,
+  cek(`cadangan ${akhir.persenAkhir.toFixed(3)}% menempel di tiap rekening (di luar Tambahan Fix)`, meleset.length === 0,
     meleset.slice(0, 3).join(', ') || `${akhir.skpd.reduce((a, s) => a + s.rekening.length, 0)} rekening diperiksa`)
 }
 
@@ -270,10 +283,11 @@ cek('nama sheet tanpa karakter ilegal', nama.every(n => !/[\\/?*[\]:]/.test(n)))
     `simInfo=${data.simInfo?.dinas} payload=${data.skpd.filter(s => s.sim != null).length}`)
 }
 
-// Sheet BANDING SIM hanya muncul kalau sudah ada isian Sim Gaji yang tersimpan.
-cek('BANDING SIM mengikuti ada/tidaknya isian Sim Gaji',
-  nama.includes('BANDING SIM') === data.skpd.some(s => (s.rekening || []).some(r => r.sim != null)),
-  data.simInfo?.jumlah ? `${data.simInfo.jumlah} baris tersimpan` : 'belum ada isian')
+// Sheet BANDING SIM sudah dilebur ke PROYEKSI AKHIR & AKHIR REKENING (kolom
+// Sim Gaji di situ dihitung dari algoritma kantong-pooling yang sama dengan
+// sisi Rumus, bukan aproksimasi terpisah seperti sheet lama) — jadi sheet
+// itu sendiri seharusnya sudah tidak ada lagi.
+cek('sheet BANDING SIM sudah dilebur, tidak ada lagi', !nama.includes('BANDING SIM'))
 
 const rekap = wb.getWorksheet('REKAP')
 const dinas1 = wb.worksheets[1]
@@ -464,23 +478,45 @@ if (!skpdBerkurang) {
     ['G', 'H', 'J', 'K', 'L', 'M'].every(k => !!wsAkhir.getCell(`${k}${BARIS_DATA}`).formula))
   cek('dasar proyeksi ditulis apa adanya', wsAkhir.getCell(`F${BARIS_DATA}`).value === g0.perBulanRutin,
     `Rp${rp(g0.perBulanRutin)} per bayar`)
-  cek('kolom Acress berupa persen yang bisa diubah',
-    Math.abs(Number(wsAkhir.getCell(`I${BARIS_DATA}`).value) - akhir.persenAkhir / 100) < 1e-9 &&
-    wsAkhir.getCell(`I${BARIS_DATA}`).fill?.fgColor?.argb === 'FFFFF6D6',
-    `${(Number(wsAkhir.getCell(`I${BARIS_DATA}`).value) * 100).toFixed(3)}%`)
+  // Kolom Acress (%) kini rumus yang menunjuk ke satu sel Acress global (ganti
+  // satu, semua baris ikut berubah) — bukan lagi angka mentah per baris. Sel
+  // itu sendiri masih boleh ditimpa manual, makanya tetap berlatar kuning.
+  const selAcress = wsAkhir.getCell(`I${BARIS_DATA}`)
+  const nilaiAcress = Number(selAcress.formula ? selAcress.result : selAcress.value)
+  cek('kolom Acress berupa rumus ke sel Acress global (boleh ditimpa manual)',
+    !!selAcress.formula &&
+    Math.abs(nilaiAcress - akhir.persenAkhir / 100) < 1e-9 &&
+    selAcress.fill?.fgColor?.argb === 'FFFFF6D6',
+    `${(nilaiAcress * 100).toFixed(3)}%`)
   // Rumus dihitung ulang di sini karena ExcelJS tidak mengevaluasinya.
   {
     const dasar = Number(wsAkhir.getCell(`F${BARIS_DATA}`).value)
     const kebutuhanSisa = dasar * data.bulanSisa
     const kebutuhan = Number(wsAkhir.getCell(`D${BARIS_DATA}`).value) + kebutuhanSisa
-    const usulan = kebutuhan + kebutuhan * Number(wsAkhir.getCell(`I${BARIS_DATA}`).value)
+    // Kolom J = Acress (Rp) + Tambahan Fix dilipat jadi satu — g0.tambahanFix
+    // sudah termasuk di g0.alokasi/g0.cadanganAkhir dari perhitungan asli.
+    const usulan = kebutuhan + kebutuhan * nilaiAcress + g0.tambahanFix
     // Toleransi sedikit lebih lebar daripada versi per-dinas: g0.kebutuhan/alokasi
     // adalah Σ rekening yang masing-masing sudah dibulatkan sendiri (bulat()),
     // jadi bisa meleset beberapa rupiah dari rumus yang dihitung dari sel utuh.
-    cek('rumus Usulan = Kebutuhan + Acress cocok dengan payload',
+    cek('rumus Usulan = Kebutuhan + Acress + Tambahan Fix cocok dengan payload',
       dekat(kebutuhan, g0.kebutuhan, 5) && dekat(usulan, g0.alokasi, 5),
-      `kebutuhan Rp${rp(kebutuhan)} vs Rp${rp(g0.kebutuhan)}; usulan Rp${rp(usulan)} vs Rp${rp(g0.alokasi)}`)
+      `kebutuhan Rp${rp(kebutuhan)} vs Rp${rp(g0.kebutuhan)}; usulan Rp${rp(usulan)} vs Rp${rp(g0.alokasi)} ` +
+      `(tambahanFix Rp${rp(g0.tambahanFix)})`)
   }
+  // Kolom N–S (sisi Sim Gaji) — nilai jadi (bukan rumus), langsung dari hasil
+  // hitungProyeksiAkhir yang sudah digabung dua basis. Selisih Usulan (S) satu-
+  // satunya yang berupa rumus (Q−K), jadi dicek terpisah.
+  cek('kolom Sim Gaji (N–R) di PROYEKSI AKHIR cocok dengan payload',
+    wsAkhir.getCell(`N${BARIS_DATA}`).value === (g0.simJumlahTerisi > 0 ? g0.simTotal : null) &&
+    wsAkhir.getCell(`O${BARIS_DATA}`).value === g0.kebutuhanSim &&
+    wsAkhir.getCell(`P${BARIS_DATA}`).value === g0.cadanganAkhirSim &&
+    wsAkhir.getCell(`Q${BARIS_DATA}`).value === g0.alokasiSim &&
+    wsAkhir.getCell(`R${BARIS_DATA}`).value === g0.pergeseranSim,
+    `Sim Gaji/Bln=${rp(g0.simTotal)} Kebutuhan=${rp(g0.kebutuhanSim)} Usulan=${rp(g0.alokasiSim)}`)
+  cek('kolom Selisih Usulan (S) PROYEKSI AKHIR berupa rumus Usulan Sim − Usulan Rumus',
+    !!wsAkhir.getCell(`S${BARIS_DATA}`).formula,
+    `selisih = Rp${rp(g0.alokasiSim - g0.alokasi)}`)
   // Kalau ada dinas tanpa PPPK di data ini, baris golongan PPPK-nya (di blok
   // PPPK, bukan baris berikutnya) harus tetap ada dan bernilai nol — bukan hilang.
   {
@@ -527,6 +563,45 @@ if (!skpdBerkurang) {
     wsRek.getCell(`G${barisRekContoh}`).value === (rekContoh.dibayar || null) &&
     wsRek.getCell(`H${barisRekContoh}`).value === rekContoh.perBulanRutin,
     `${wsRek.getCell(`G${barisRekContoh}`).value}× bayar`)
+
+  // Kolom P–X (sisi Sim Gaji, LIVE lewat rumus di sini) — satu contoh yang
+  // sudah terisi Sim Gaji, satu contoh yang belum (buat buktikan fallback-nya
+  // ke Kebutuhan s.d. Des Rumus, bukan 0). Dicari dengan kode SKPD + kode
+  // rekening sekaligus — kode rekening sendiri berulang di tiap dinas.
+  let dinasRekSim = null, rekSimContoh = null
+  let dinasRekKosong = null, rekKosongContoh = null
+  for (const s of akhir.skpd) {
+    if (!rekSimContoh) {
+      const r = s.rekening.find(r => r.sim != null)
+      if (r) { rekSimContoh = r; dinasRekSim = s }
+    }
+    if (!rekKosongContoh && !s.terkunci) {
+      // kebutuhan > 0 supaya perbandingannya tidak kebetulan cocok di 0=0.
+      const r = s.rekening.find(r => r.sim == null && r.kebutuhan > 0)
+      if (r) { rekKosongContoh = r; dinasRekKosong = s }
+    }
+  }
+  if (rekSimContoh) {
+    const baris = cariBarisRekeningDinas(wsRek, dinasRekSim.kodeSkpd, rekSimContoh.kodeRekening)
+    const selS = wsRek.getCell(`S${baris}`)
+    const nilaiS = Number(selS.formula ? selS.result : selS.value)
+    cek('AKHIR REKENING kolom Sim Gaji (P) & Kebutuhan Sim (S) cocok payload (rekening terisi)',
+      baris > 0 &&
+      wsRek.getCell(`P${baris}`).value === rekSimContoh.sim &&
+      dekat(nilaiS, rekSimContoh.kebutuhanSim, 2),
+      `${dinasRekSim.namaSkpd}/${rekSimContoh.kodeRekening}: P=${rp(rekSimContoh.sim)} S=${rp(nilaiS)} vs payload Rp${rp(rekSimContoh.kebutuhanSim)}`)
+  }
+  if (rekKosongContoh) {
+    const baris = cariBarisRekeningDinas(wsRek, dinasRekKosong.kodeSkpd, rekKosongContoh.kodeRekening)
+    const selS = wsRek.getCell(`S${baris}`)
+    const nilaiS = Number(selS.formula ? selS.result : selS.value)
+    // J (Kebutuhan s.d. Des Rumus) tidak dicek lewat sel-nya sendiri — formula
+    // itu tidak punya `result` cache (sudah begitu sebelum kolom Sim ditambah),
+    // jadi dibandingkan langsung ke payload (angka sumber yang sama).
+    cek('rekening tanpa isian Sim Gaji: Kebutuhan (Sim) jatuh balik ke Kebutuhan (Rumus)',
+      baris > 0 && wsRek.getCell(`P${baris}`).value == null && dekat(nilaiS, rekKosongContoh.kebutuhan, 2),
+      `${dinasRekKosong.namaSkpd}/${rekKosongContoh.kodeRekening}: S=Rp${rp(nilaiS)} vs payload Rp${rp(rekKosongContoh.kebutuhan)}`)
+  }
 
   const rekLookup = new Map()
   for (const s of akhir.skpd) for (const r of s.rekening) rekLookup.set(`${s.kodeSkpd}|${r.kodeRekening}`, r)
