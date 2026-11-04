@@ -85,6 +85,29 @@ const routes = [
             ]
           },
           {
+            // Data DPA kiriman penat-extension. Jadwal dan Tim TAPD tidak
+            // bergantung ke referensi SKPD; matriks dokumen butuh daftar dinasnya.
+            path: 'dpa',
+            children: [
+              {
+                path: 'jadwal',
+                name: 'DpaJadwal',
+                component: () => import('../views/dpa/JadwalView.vue')
+              },
+              {
+                path: 'tim-tapd',
+                name: 'DpaTimTapd',
+                component: () => import('../views/dpa/TimTapdView.vue')
+              },
+              {
+                path: 'dokumen',
+                name: 'DpaDokumen',
+                component: () => import('../views/dpa/DokumenView.vue'),
+                meta: { requiresSkpdSync: true }
+              }
+            ]
+          },
+          {
             // Alat mandiri: sumbernya file Excel Lampiran I, tidak butuh data SIPD
             path: 'perbup-apbd',
             name: 'PerbupApbd',

@@ -16,7 +16,8 @@
     "uji:rekap-realisasi": "node scripts/uji-rekap-realisasi.mjs",
     "uji:kode-rekening": "node scripts/uji-kode-rekening.mjs",
     "uji:sim-gaji": "node scripts/uji-sim-gaji.mjs",
-    "uji:banding-inputan": "node scripts/uji-banding-inputan.mjs"
+    "uji:banding-inputan": "node scripts/uji-banding-inputan.mjs",
+    "uji:sync-dpa": "node scripts/uji-sync-dpa.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

@@ -22,6 +22,7 @@ import simGajiRoutes from './routes/simGaji.js'
 import apiKeysRoutes from './routes/apiKeys.js'
 import syncRoutes from './routes/sync.js'
 import mappingRoutes from './routes/mapping.js'
+import dpaRoutes from './routes/dpa.js'
 
 const app = new Hono()
 
@@ -51,6 +52,7 @@ app.route('/api/efisiensi', efisiensiRoutes)
 app.route('/api/proyeksi-gaji', proyeksiGajiRoutes)
 app.route('/api/sim-gaji', simGajiRoutes)
 app.route('/api/mapping-pmk', mappingRoutes)
+app.route('/api/dpa', dpaRoutes)
 
 serve({ fetch: app.fetch, port: 3001 }, () => {
   console.log('API running on http://localhost:3001')

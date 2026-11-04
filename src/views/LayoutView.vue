@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useTahunStore } from '../stores/tahun'
-import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled, TrendCharts, PieChart, Histogram, Tickets, Wallet } from '@element-plus/icons-vue'
+import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled, TrendCharts, PieChart, Histogram, Tickets, Wallet, Notebook, Calendar, UserFilled } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -112,6 +112,25 @@ function goHome() {
             <el-menu-item v-if="skpdSynced" :index="`/tahun/${tahun}/referensi/subkegiatan-pmk`">
               <el-icon><Document /></el-icon>
               <span>Subkegiatan PMK</span>
+            </el-menu-item>
+          </el-sub-menu>
+
+          <el-sub-menu index="dpa">
+            <template #title>
+              <el-icon><Notebook /></el-icon>
+              <span>DPA</span>
+            </template>
+            <el-menu-item :index="`/tahun/${tahun}/dpa/jadwal`">
+              <el-icon><Calendar /></el-icon>
+              <span>Jadwal</span>
+            </el-menu-item>
+            <el-menu-item :index="`/tahun/${tahun}/dpa/tim-tapd`">
+              <el-icon><UserFilled /></el-icon>
+              <span>Tim TAPD</span>
+            </el-menu-item>
+            <el-menu-item v-if="skpdSynced" :index="`/tahun/${tahun}/dpa/dokumen`">
+              <el-icon><Document /></el-icon>
+              <span>Dokumen</span>
             </el-menu-item>
           </el-sub-menu>
 
