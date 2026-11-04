@@ -23,9 +23,11 @@ const DEFAULT_PERSEN_CADANGAN = 2.5
 // pembulatan/potongan pajak yang susah ditebak dari tren realisasi. Ditambah
 // sekali lagi FLAT (bukan proporsional, bukan ikut dipotong kalau kantong
 // kurang) supaya dua rekening ini praktis tidak pernah kurang.
-const DEFAULT_TAMBAHAN_FIX = 200000
+export const DEFAULT_TAMBAHAN_FIX = 200000
+// Diekspor supaya kesiapanRekening.js memakai pola & besaran yang SAMA, bukan
+// salinan yang lama-lama menyimpang.
 const POLA_TAMBAHAN_FIX = /pembulatan|tunjangan\s+(khusus|pph)/i
-function cocokTambahanFix(namaRekening) {
+export function cocokTambahanFix(namaRekening) {
   return POLA_TAMBAHAN_FIX.test(String(namaRekening || ''))
 }
 
@@ -139,15 +141,25 @@ function rapikanPembulatan(items, target) {
 // dibulatkan — basis rumus atau basis sim tergantung siapa yang memanggil
 // (lihat hitungSatuBasis). Dilewatkan sebagai fungsi, bukan field statis,
 // supaya bagiKeRekening tidak perlu tahu basis mana yang sedang dihitung.
+//
+// Tambahan fix hanya menempel kalau dinas itu memang punya pegawai di golongan
+// tersebut (Σ kebutuhan golongan dinas > 0). Dinas yang sama sekali tidak punya
+// PPPK tetap bisa punya baris rekening PPPK berpagu 0 — tanpa syarat ini
+// rekening kosong itu ikut dapat 200 ribu yang tidak akan pernah dipakai.
 function bagiKeRekening(b, tambahanFix, kebutuhanRekeningFn) {
-  const bonusPool = b.terkunci
-    ? 0
-    : (b._rekening || []).reduce((a, r) => a + (cocokTambahanFix(r.namaRekening) ? tambahanFix : 0), 0)
+  const kebutuhanGolongan = new Map()
+  for (const r of b._rekening || []) {
+    const gol = subRincianRekening(r.kodeRekening) || '-'
+    kebutuhanGolongan.set(gol, (kebutuhanGolongan.get(gol) || 0) + (Number(kebutuhanRekeningFn(r)) || 0))
+  }
+  const dapatBonus = (r) => !b.terkunci && cocokTambahanFix(r.namaRekening) &&
+    (kebutuhanGolongan.get(subRincianRekening(r.kodeRekening) || '-') || 0) > 0
+  const bonusPool = (b._rekening || []).reduce((a, r) => a + (dapatBonus(r) ? tambahanFix : 0), 0)
   const faktor = b.kebutuhan > 0 ? b.alokasi / b.kebutuhan : 0
   const rows = (b._rekening || []).map(r => {
     const pagu = bulat(r.pagu)
     const kebutuhan = bulat(kebutuhanRekeningFn(r))
-    const bonus = !b.terkunci && cocokTambahanFix(r.namaRekening) ? tambahanFix : 0
+    const bonus = dapatBonus(r) ? tambahanFix : 0
     return {
       kodeRekening: r.kodeRekening,
       namaRekening: r.namaRekening,

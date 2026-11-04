@@ -21,7 +21,12 @@ const selectedSumberDana = ref(['DAU', 'DAU_DITENTUKAN', 'LKB'])
 // Filter
 const search = ref('')
 const skpdFilter = ref('')
-const jenisFilter = ref('')
+// Daftar kode rekening yang dipilih; kosong berarti semua rekening. Sama seperti
+// menu rekening di Dokumen Realisasi: boleh lebih dari satu, tiap kode dipakai
+// sebagai AWALAN (5.1.02 ikut mencakup seluruh rinciannya).
+const rekeningFilter = ref([])
+// Sub kegiatan dipilih lewat kodenya, tapi dicari/ditampilkan lewat namanya.
+const subKegiatanFilter = ref([])
 const serapanMax = ref(null) // hanya tampilkan serapan <= X %
 const sisaMin = ref(null) // hanya tampilkan sisa >= Rp N
 
@@ -52,31 +57,81 @@ const skpdOptions = computed(() => {
     .sort((a, b) => String(a.nama).localeCompare(String(b.nama), 'id'))
 })
 
-const jenisOptions = computed(() => {
+// Pilihan rekening diambil dari rincian seluruh baris, bukan dari jenisnya,
+// jadi isinya setara daftar rekening di Dokumen Realisasi.
+const rekeningOptions = computed(() => {
   const m = new Map()
-  for (const r of rows.value) if (!m.has(r.kodeJenis)) m.set(r.kodeJenis, r.namaJenis)
+  for (const r of rows.value) {
+    for (const d of r.details) if (!m.has(d.kodeRekening)) m.set(d.kodeRekening, d.namaRekening)
+  }
   return Array.from(m, ([kode, nama]) => ({ kode, nama }))
     .sort((a, b) => String(a.kode).localeCompare(String(b.kode), 'id', { numeric: true }))
 })
 
+function cocokRekening(kode) {
+  const k = String(kode || '')
+  return rekeningFilter.value.some(f => k === f || k.startsWith(f + '.'))
+}
+
+const subKegiatanOptions = computed(() => {
+  const m = new Map()
+  for (const r of rows.value) {
+    for (const d of r.details) {
+      for (const sub of d.subs || []) if (!m.has(sub.kode)) m.set(sub.kode, sub.nama)
+    }
+  }
+  return Array.from(m, ([kode, nama]) => ({ kode, nama }))
+    .sort((a, b) => String(a.nama).localeCompare(String(b.nama), 'id'))
+})
+
+function agregat(daftar) {
+  let pagu = 0, spp = 0, sp2d = 0
+  for (const d of daftar) { pagu += d.pagu; spp += d.spp; sp2d += d.sp2d }
+  return { pagu, spp, sp2d, sisa: pagu - sp2d, serapan: pagu > 0 ? sp2d / pagu : null }
+}
+
+// Saat rekening / sub kegiatan disaring, angka baris dihitung ulang dari bagian
+// yang cocok saja — supaya pagu/SP2D/sisa yang tampil memang milik pilihan itu,
+// bukan seluruh jenis belanjanya. Sub kegiatan dipakai untuk mempersempit tiap
+// rincian rekening, karena satu rekening bisa dipakai beberapa sub kegiatan.
+function persempit(r, { saringRekening, saringSub }) {
+  const details = []
+  for (const d of r.details) {
+    if (saringRekening && !cocokRekening(d.kodeRekening)) continue
+    if (!saringSub) { details.push(d); continue }
+    const subs = (d.subs || []).filter(sub => subKegiatanFilter.value.includes(sub.kode))
+    if (!subs.length) continue
+    details.push({ ...d, subs, ...agregat(subs) })
+  }
+  if (!details.length) return null
+  return { ...r, details, ...agregat(details) }
+}
+
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
-  return rows.value.filter(r => {
-    if (skpdFilter.value && r.kodeSkpd !== skpdFilter.value) return false
-    if (jenisFilter.value && r.kodeJenis !== jenisFilter.value) return false
+  const saringRekening = rekeningFilter.value.length > 0
+  const saringSub = subKegiatanFilter.value.length > 0
+  const hasil = []
+  for (const r of rows.value) {
+    if (skpdFilter.value && r.kodeSkpd !== skpdFilter.value) continue
+    const baris = (saringRekening || saringSub) ? persempit(r, { saringRekening, saringSub }) : r
+    if (!baris) continue
     if (serapanMax.value != null && serapanMax.value !== '') {
-      const pct = r.serapan == null ? 0 : r.serapan * 100
-      if (pct > Number(serapanMax.value)) return false
+      const pct = baris.serapan == null ? 0 : baris.serapan * 100
+      if (pct > Number(serapanMax.value)) continue
     }
     if (sisaMin.value != null && sisaMin.value !== '') {
-      if (r.sisa < Number(sisaMin.value)) return false
+      if (baris.sisa < Number(sisaMin.value)) continue
     }
     if (q) {
-      const hay = `${r.namaSkpd} ${r.namaUnit} ${r.namaJenis} ${r.kodeJenis}`.toLowerCase()
-      if (!hay.includes(q)) return false
+      const hay = `${baris.namaSkpd} ${baris.namaUnit} ${baris.namaJenis} ${baris.kodeJenis} `
+        + baris.details.map(d => `${d.kodeRekening} ${d.namaRekening} `
+            + (d.subs || []).map(sub => sub.nama).join(' ')).join(' ')
+      if (!hay.toLowerCase().includes(q)) continue
     }
-    return true
-  })
+    hasil.push(baris)
+  }
+  return hasil
 })
 
 const filteredTotals = computed(() => {
@@ -88,14 +143,16 @@ const filteredTotals = computed(() => {
 })
 
 const isFiltering = computed(() =>
-  !!(search.value.trim() || skpdFilter.value || jenisFilter.value ||
+  !!(search.value.trim() || skpdFilter.value || rekeningFilter.value.length ||
+     subKegiatanFilter.value.length ||
      (serapanMax.value != null && serapanMax.value !== '') ||
      (sisaMin.value != null && sisaMin.value !== '')))
 
 function resetFilter() {
   search.value = ''
   skpdFilter.value = ''
-  jenisFilter.value = ''
+  rekeningFilter.value = []
+  subKegiatanFilter.value = []
   serapanMax.value = null
   sisaMin.value = null
 }
@@ -253,7 +310,7 @@ async function exportExcel() {
       <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
         <el-input
           v-model="search"
-          placeholder="Cari SKPD / unit / jenis belanja..."
+          placeholder="Cari SKPD / unit / rekening / sub kegiatan..."
           :prefix-icon="Search"
           clearable
           style="max-width: 260px;"
@@ -261,8 +318,25 @@ async function exportExcel() {
         <el-select v-model="skpdFilter" placeholder="Semua SKPD" clearable filterable style="width: 220px;">
           <el-option v-for="o in skpdOptions" :key="o.kode" :label="o.nama" :value="o.kode" />
         </el-select>
-        <el-select v-model="jenisFilter" placeholder="Semua Jenis Belanja" clearable style="width: 220px;">
-          <el-option v-for="o in jenisOptions" :key="o.kode" :label="`${o.kode} — ${o.nama}`" :value="o.kode" />
+        <el-select
+          v-model="rekeningFilter"
+          placeholder="Semua rekening"
+          multiple collapse-tags collapse-tags-tooltip
+          clearable filterable
+          :max-collapse-tags="1"
+          style="width: 300px;"
+        >
+          <el-option v-for="o in rekeningOptions" :key="o.kode" :label="`${o.kode} — ${o.nama}`" :value="o.kode" />
+        </el-select>
+        <el-select
+          v-model="subKegiatanFilter"
+          placeholder="Semua Sub Kegiatan"
+          multiple collapse-tags collapse-tags-tooltip
+          clearable filterable
+          :max-collapse-tags="1"
+          style="width: 300px;"
+        >
+          <el-option v-for="o in subKegiatanOptions" :key="o.kode" :label="o.nama" :value="o.kode" />
         </el-select>
         <div style="display: flex; align-items: center; gap: 6px;">
           <span style="font-size: 12px; color: #606266;">Serapan &le;</span>

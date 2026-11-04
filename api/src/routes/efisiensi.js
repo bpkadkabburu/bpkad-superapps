@@ -104,13 +104,15 @@ router.get('/', async (c) => {
        kode_skpd, nama_skpd,
        kode_sub_unit AS kode_sub_skpd, nama_sub_unit AS nama_sub_skpd,
        kode_urusan, kode_bidang_urusan, kode_program, kode_kegiatan,
-       kode_sub_kegiatan, kode_rekening, nama_rekening, kode_sumber_dana,
+       kode_sub_kegiatan, nama_sub_kegiatan, kode_rekening, nama_rekening,
+       kode_sumber_dana,
        SUM(pagu) AS pagu
      FROM anggaran_rekap
      WHERE tahun_id = ?
      GROUP BY kode_skpd, nama_skpd, kode_sub_unit, nama_sub_unit,
        kode_urusan, kode_bidang_urusan, kode_program, kode_kegiatan,
-       kode_sub_kegiatan, kode_rekening, nama_rekening, kode_sumber_dana`,
+       kode_sub_kegiatan, nama_sub_kegiatan, kode_rekening, nama_rekening,
+       kode_sumber_dana`,
     [tahun_id]
   )
 
@@ -119,7 +121,7 @@ router.get('/', async (c) => {
        kode_skpd, nama_skpd,
        kode_sub_skpd, nama_sub_skpd,
        kode_urusan, kode_bidang_urusan, kode_program, kode_kegiatan,
-       kode_sub_kegiatan, kode_rekening, nama_rekening,
+       kode_sub_kegiatan, nama_sub_kegiatan, kode_rekening, nama_rekening,
        SUM(nilai_realisasi) AS spp,
        SUM(CASE WHEN nomor_sp2d IS NOT NULL AND LOWER(TRIM(nomor_sp2d)) NOT IN ('', 'null', '-')
                 THEN nilai_realisasi ELSE 0 END) AS sp2d
@@ -127,7 +129,7 @@ router.get('/', async (c) => {
      WHERE tahun_id = ?
      GROUP BY kode_skpd, nama_skpd, kode_sub_skpd, nama_sub_skpd,
        kode_urusan, kode_bidang_urusan, kode_program, kode_kegiatan,
-       kode_sub_kegiatan, kode_rekening, nama_rekening`,
+       kode_sub_kegiatan, nama_sub_kegiatan, kode_rekening, nama_rekening`,
     [tahun_id]
   )
 
@@ -156,6 +158,7 @@ router.get('/', async (c) => {
     if (!leaf.row.kode_sub_skpd) leaf.row.kode_sub_skpd = row.kode_sub_skpd
     if (!leaf.row.nama_skpd) leaf.row.nama_skpd = row.nama_skpd
     if (!leaf.row.nama_rekening) leaf.row.nama_rekening = row.nama_rekening
+    if (!leaf.row.nama_sub_kegiatan) leaf.row.nama_sub_kegiatan = row.nama_sub_kegiatan
   }
 
   // Pecah tiap leaf menjadi kontribusi per kategori sumber dana (dengan atribusi
@@ -204,10 +207,23 @@ router.get('/', async (c) => {
 
     let det = row.details.get(r.kode_rekening)
     if (!det) {
-      det = { kodeRekening: r.kode_rekening, namaRekening: r.nama_rekening, pagu: 0, spp: 0, sp2d: 0 }
+      det = {
+        kodeRekening: r.kode_rekening, namaRekening: r.nama_rekening,
+        pagu: 0, spp: 0, sp2d: 0, subs: new Map(),
+      }
       row.details.set(r.kode_rekening, det)
     }
     det.pagu += selPagu; det.spp += selSpp; det.sp2d += selSp2d
+
+    // Pecahan per sub kegiatan disimpan supaya frontend bisa menyaring per sub
+    // kegiatan tanpa kehilangan ketepatan angka pagu/SPP/SP2D.
+    const kodeSub = r.kode_sub_kegiatan || ''
+    let sub = det.subs.get(kodeSub)
+    if (!sub) {
+      sub = { kode: kodeSub, nama: r.nama_sub_kegiatan || kodeSub, pagu: 0, spp: 0, sp2d: 0 }
+      det.subs.set(kodeSub, sub)
+    }
+    sub.pagu += selPagu; sub.spp += selSpp; sub.sp2d += selSp2d
 
     totals.pagu += selPagu; totals.spp += selSpp; totals.sp2d += selSp2d
   }
@@ -219,7 +235,10 @@ router.get('/', async (c) => {
     pagu: row.pagu, spp: row.spp, sp2d: row.sp2d,
     sisa: row.pagu - row.sp2d, serapan: serapan(row.sp2d, row.pagu),
     details: Array.from(row.details.values())
-      .map(d => ({ ...d, sisa: d.pagu - d.sp2d, serapan: serapan(d.sp2d, d.pagu) }))
+      .map(d => ({
+        ...d, sisa: d.pagu - d.sp2d, serapan: serapan(d.sp2d, d.pagu),
+        subs: Array.from(d.subs.values()),
+      }))
       .sort((a, b) => b.sisa - a.sisa),
   })).sort((a, b) => b.sisa - a.sisa)
 

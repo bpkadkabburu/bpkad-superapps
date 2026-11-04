@@ -11,10 +11,12 @@
     "uji:perbup": "node scripts/uji-perbup-api.mjs",
     "uji:proyeksi-gaji": "node scripts/uji-proyeksi-gaji.mjs",
     "uji:proyeksi-akhir": "node scripts/uji-proyeksi-akhir.mjs",
+    "uji:kesiapan-rekening": "node scripts/uji-kesiapan-rekening.mjs",
     "uji:dokumen-realisasi": "node scripts/uji-dokumen-realisasi.mjs",
     "uji:rekap-realisasi": "node scripts/uji-rekap-realisasi.mjs",
     "uji:kode-rekening": "node scripts/uji-kode-rekening.mjs",
-    "uji:sim-gaji": "node scripts/uji-sim-gaji.mjs"
+    "uji:sim-gaji": "node scripts/uji-sim-gaji.mjs",
+    "uji:banding-inputan": "node scripts/uji-banding-inputan.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

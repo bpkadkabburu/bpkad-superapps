@@ -5,7 +5,13 @@ import { Download, Refresh, Upload, WarningFilled } from '@element-plus/icons-vu
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../utils/api.js'
 import { buatWorkbookProyeksiGaji, namaFileProyeksiGaji } from '../utils/proyeksiGajiExcel.js'
+import { buatWorkbookKesiapan, namaFileKesiapan } from '../utils/proyeksiGajiKesiapanExcel.js'
 import { bacaSimGajiDariWorkbook, BerkasTidakDikenal } from '../utils/proyeksiGajiImport.js'
+import {
+  bacaRekapAnggaran, bandingkanInputan, matriksBanding,
+  BerkasTidakDikenal as BerkasRekapTidakDikenal,
+} from '../utils/bandingInputan.js'
+import { buatWorkbookMatriksInputan, namaFileMatriksInputan } from '../utils/matriksInputanExcel.js'
 
 const route = useRoute()
 const tahun = computed(() => route.params.tahun)
@@ -36,6 +42,7 @@ const KOSONG = {
 
 const loading = ref(false)
 const exporting = ref(false)
+const exportingKesiapan = ref(false)
 const prefix = ref('5.1.01.01')
 const data = ref(KOSONG)
 const tampilkanRekeningKurang = ref(true)
@@ -341,6 +348,18 @@ async function hapusSimGaji() {
   }
 }
 
+// Dua export memakai unduhan yang sama, cuma beda pembangun workbook-nya.
+function unduh(buf, nama) {
+  const url = URL.createObjectURL(new Blob([buf], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = nama
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 async function exportExcel() {
   if (!rows.value.length) {
     ElMessage.warning('Tidak ada data untuk diekspor')
@@ -349,19 +368,183 @@ async function exportExcel() {
   exporting.value = true
   try {
     const buf = await buatWorkbookProyeksiGaji(data.value, { tahun: tahun.value })
-    const url = URL.createObjectURL(new Blob([buf], {
-      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = namaFileProyeksiGaji(tahun.value, data.value.prefix, data.value.bulanTerakhir)
-    a.click()
-    URL.revokeObjectURL(url)
+    unduh(buf, namaFileProyeksiGaji(tahun.value, data.value.prefix, data.value.bulanTerakhir))
     ElMessage.success(`File diekspor — ${rows.value.length} sheet dinas`)
   } catch (e) {
     ElMessage.error('Gagal membuat file: ' + (e?.message || e))
   } finally {
     exporting.value = false
+  }
+}
+
+// Berkas terpisah, bukan sheet tambahan di file utama: yang ini dicetak dan
+// dibawa saat ditanya "rekening ini kurang, ambilnya dari mana", sementara file
+// utama dipakai menyusun usulan alokasi. Dua keperluan, dua berkas.
+async function exportKesiapan() {
+  if (!rows.value.length) {
+    ElMessage.warning('Tidak ada data untuk diekspor')
+    return
+  }
+  if (!data.value.kesiapan) {
+    ElMessage.warning('Data kesiapan rekening belum tersedia — muat ulang dulu')
+    return
+  }
+  exportingKesiapan.value = true
+  try {
+    const buf = await buatWorkbookKesiapan(data.value, { tahun: tahun.value })
+    unduh(buf, namaFileKesiapan(tahun.value, data.value.prefix, data.value.bulanTerakhir))
+    const t = data.value.kesiapan.total
+    ElMessage.success(`Lembar kesiapan diekspor — ${t.rekMentokTotal} rekening mentok, ${t.dinasPerluLuar} dinas perlu dari luar dinas`)
+  } catch (e) {
+    ElMessage.error('Gagal membuat file: ' + (e?.message || e))
+  } finally {
+    exportingKesiapan.value = false
+  }
+}
+
+// ---- Cek Inputan: adu usulan proyeksi dengan pagu yang sudah benar-benar diinput ----
+//
+// File pembanding dibaca DI BROWSER saja dan tidak pernah dikirim ke server.
+// Itu bukan penghematan, tapi syarat: kolom Pagu di seluruh perhitungan
+// proyeksi berasal dari tabel anggaran_rekap, jadi kalau file ini ikut
+// disimpan, pagunya berubah → usulannya ikut berubah → yang dibandingkan jadi
+// dirinya sendiri.
+const inputan = ref(null)
+const membacaInputan = ref(false)
+// Patokan pembanding: usulan sisi rumus atau sisi Sim Gaji. Dipilih pemakai
+// karena yang dipakai waktu menginput bisa salah satunya.
+const bandingSisi = ref('rumus')
+// Selisih di bawah ini dianggap sesuai — waktu input, angka lazim dibulatkan.
+const toleransiInputan = ref(0)
+// Batas selisih TOTAL satu dinas-golongan. Di bawah ini, rekening yang meleset
+// dianggap saling tutup — tampil, tapi tidak dihitung masalah.
+const toleransiTotal = ref(0)
+
+const banding = computed(() => inputan.value
+  ? bandingkanInputan(akhir.value, inputan.value, {
+      sisi: bandingSisi.value, toleransi: toleransiInputan.value,
+    })
+  : null)
+
+// Rekening yang diinput di bawah kebutuhan riil sampai Desember — dirinci
+// langsung di peringatannya, karena matriks tidak memuat kolom kebutuhan.
+const barisDibawahKebutuhan = computed(() => (banding.value?.baris || [])
+  .filter(r => r.dibawahKebutuhan)
+  .sort((a, b) => (a.inputan - a.kebutuhan) - (b.inputan - b.kebutuhan)))
+
+async function handleImportInputan(uploadFile) {
+  if (!uploadFile?.raw) return false
+  if (!rows.value.length) {
+    ElMessage.warning('Muat data proyeksinya dulu sebelum mengunggah pembanding.')
+    return false
+  }
+  membacaInputan.value = true
+  try {
+    const pertamaKali = !inputan.value
+    const hasil = await bacaRekapAnggaran(uploadFile.raw, { prefix: data.value.prefix || prefix.value })
+    inputan.value = hasil
+    // Kalau isian Sim Gaji ada, itu yang lazimnya dipakai waktu menginput —
+    // jadi dijadikan patokan awal, tapi tetap boleh digeser pemakai.
+    if (pertamaKali && adaSim.value) bandingSisi.value = 'sim'
+    tab.value = 'inputan'
+    ElMessage.success(
+      `${hasil.jumlahRekening} rekening dari ${hasil.jumlahDinas} dinas terbaca. ` +
+      'File tidak disimpan ke server.')
+  } catch (e) {
+    if (e instanceof BerkasRekapTidakDikenal) ElMessage.error(e.message)
+    else ElMessage.error('Gagal membaca file: ' + (e?.message || e))
+  } finally {
+    membacaInputan.value = false
+  }
+  return false
+}
+
+function lupakanInputan() {
+  inputan.value = null
+}
+
+// ---- Matriks: perangkat daerah × komponen gaji, per golongan ----
+//
+// Susunan lembar kerja manual: satu tabel PNS, satu PPPK; tiap sel bisa
+// dilihat sebagai Hitungan, Inputan, Selisih, atau hasil adu TRUE/FALSE.
+const matriks = computed(() => matriksBanding(banding.value, { toleransiTotal: toleransiTotal.value }))
+const golMatriks = ref(null)
+const tampilMatriks = ref('cocok')
+// 'semua' | 'beda' (ada sel FALSE, termasuk saling tutup) | 'signifikan'
+const saringMatriks = ref('semua')
+// Yang benar-benar perlu ditindak: dinas-golongan yang total selisihnya lewat
+// batas. Rekening yang cuma saling tutup tidak ikut dihitung di sini.
+const jumlahSignifikan = computed(() => matriks.value.reduce((a, m) => a + m.dinasSignifikan, 0))
+const jumlahSalingTutup = computed(() => matriks.value.reduce((a, m) => a + m.dinasSalingTutup, 0))
+const LABEL_STATUS_TOTAL = {
+  cocok: { teks: 'COCOK', kelas: 'sel-true' },
+  salingTutup: { teks: 'SALING TUTUP', kelas: 'sel-tutup' },
+  signifikan: { teks: 'SIGNIFIKAN', kelas: 'sel-false' },
+}
+function kelasSelMatriks(row, c) {
+  if (c.cocok) return 'sel-true'
+  return row.status === 'salingTutup' ? 'sel-tutup' : 'sel-false'
+}
+const exportingMatriks = ref(false)
+
+const matriksAktif = computed(() => {
+  const daftar = matriks.value
+  if (!daftar.length) return null
+  return daftar.find(m => m.kunci === golMatriks.value) || daftar[0]
+})
+const barisMatriks = computed(() => {
+  const m = matriksAktif.value
+  if (!m) return []
+  if (saringMatriks.value === 'beda') return m.baris.filter(d => !d.cocok)
+  if (saringMatriks.value === 'signifikan') return m.baris.filter(d => d.status === 'signifikan')
+  return m.baris
+})
+
+function nilaiSelMatriks(c) {
+  if (tampilMatriks.value === 'hitungan') return c.hitungan
+  if (tampilMatriks.value === 'inputan') return c.inputan
+  return c.selisih
+}
+function judulSelMatriks(c) {
+  return `Hitungan ${formatRp(c.hitungan)}${c.adaHitungan ? '' : ' (tidak ada di usulan)'}\n` +
+    `Inputan ${formatRp(c.inputan)}${c.adaInputan ? '' : ' (tidak ada di berkas)'}\n` +
+    `Selisih ${formatSelisih(c.selisih)}`
+}
+function ringkasMatriks({ columns }) {
+  const m = matriksAktif.value
+  return columns.map((col, i) => {
+    if (i === 0) return tampilMatriks.value === 'cocok' ? 'Jumlah FALSE' : 'JUMLAH'
+    const kode = col.columnKey
+    if (tampilMatriks.value === 'cocok') {
+      if (kode === '__semua') return `${m.dinasSignifikan} signifikan`
+      return String(m.total.salah[kode] ?? '')
+    }
+    const pilih = (h, inp) => tampilMatriks.value === 'hitungan' ? h
+      : tampilMatriks.value === 'inputan' ? inp : inp - h
+    if (kode === '__semua') return formatRp(pilih(m.jumlahHitungan, m.jumlahInputan))
+    if (!(kode in m.total.hitungan)) return ''
+    return formatRp(pilih(m.total.hitungan[kode], m.total.inputan[kode]))
+  })
+}
+
+async function exportMatriks() {
+  if (!matriks.value.length) return
+  exportingMatriks.value = true
+  try {
+    const buf = await buatWorkbookMatriksInputan(matriks.value, {
+      tahun: tahun.value,
+      sisi: bandingSisi.value,
+      persenAcress: formatPersen(bandingSisi.value === 'sim' ? akhir.value.persenAkhirSim : akhir.value.persenAkhir),
+      toleransi: toleransiInputan.value,
+      toleransiTotal: toleransiTotal.value,
+      namaBerkas: inputan.value?.namaBerkas || '-',
+    })
+    unduh(buf, namaFileMatriksInputan(tahun.value))
+    ElMessage.success('Matriks cek inputan diekspor')
+  } catch (e) {
+    ElMessage.error('Gagal membuat file: ' + (e?.message || e))
+  } finally {
+    exportingMatriks.value = false
   }
 }
 </script>
@@ -373,7 +556,8 @@ async function exportExcel() {
       <p style="margin: 4px 0 0; font-size: 13px; color: #909399;">
         Kebutuhan belanja gaji &amp; tunjangan sampai akhir tahun, per SKPD &rarr; per rekening.
         Tab <strong>Proyeksi Kebutuhan</strong> menunjukkan dinas dan rekening mana yang kurang anggaran;
-        tab <strong>Proyeksi Akhir</strong> membagi ulang pagu sekabupaten jadi usulan alokasi sampai tutup tahun &bull;
+        tab <strong>Proyeksi Akhir</strong> membagi ulang pagu sekabupaten jadi usulan alokasi sampai tutup tahun;
+        tab <strong>Cek Inputan</strong> mengadu usulan itu dengan pagu yang sudah benar-benar diinput &bull;
         Sumber: Anggaran Rekap (pagu) &amp; Dokumen Realisasi (SP2D).
       </p>
     </div>
@@ -394,6 +578,9 @@ async function exportExcel() {
           <el-button type="primary" :icon="Download" :loading="exporting" @click="exportExcel">
             Export Excel
           </el-button>
+          <el-button type="warning" plain :icon="Download" :loading="exportingKesiapan" @click="exportKesiapan">
+            Export Lembar Kesiapan
+          </el-button>
         </div>
       </div>
       <div style="margin-top: 10px; font-size: 12px; color: #909399;">
@@ -402,6 +589,13 @@ async function exportExcel() {
         per rekening, siap jadi lampiran usulan pergeseran).
         Kolom <strong>Sim Gaji /Bln</strong> dibiarkan kosong untuk diisi manual — begitu diisi, kolom Kebutuhan,
         Selisih, dan Status ikut terhitung ulang di Excel.
+      </div>
+      <div style="margin-top: 6px; font-size: 12px; color: #909399;">
+        <strong>Export Lembar Kesiapan</strong> menghasilkan berkas terpisah yang menjawab pertanyaan lain:
+        &ldquo;rekening ini kurang, ambilnya dari mana?&rdquo; Sheet <strong>JAWABAN</strong> memuat satu baris per
+        rekening yang akan mentok beserta rekening sumbernya &mdash; gaji pokok didahulukan, sumber selalu dari dinas
+        yang sama, dan yang tidak cukup ditandai perlu dari luar dinas. Ditambah sheet PER DINAS, PER REKENING, dan
+        RINGKASAN.
       </div>
     </el-card>
 
@@ -707,7 +901,9 @@ async function exportExcel() {
             kekurangannya <strong>disebar ke semua dinas</strong> dengan memangkas acress secara proporsional — bukan
             dengan memotong kebutuhan gajinya, jadi tidak ada dinas yang kehabisan gaji sebelum tutup tahun.
             Urutan kolomnya: <strong>Pagu &middot; Realisasi &middot; {{ labelBasis }} &middot; Kebutuhan &middot;
-            Acress &middot; Usulan &middot; Pergeseran</strong>.
+            Acress &middot; Usulan &middot; Pergeseran</strong> &mdash; itu sisi <strong>rumus</strong> (dari tren
+            realisasi SP2D). Begitu isian Sim Gaji ada, kolom yang sama diulang bertanda <strong>(Sim)</strong>
+            di sebelahnya: rantai hitungan yang sama persis, cuma kebutuhannya dari isian Sim Gaji.
           </p>
           <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;">
             <div>
@@ -739,6 +935,8 @@ async function exportExcel() {
                 rupiah, FLAT — ditempelkan di atas Acress khusus rekening <strong>Pembulatan Gaji</strong> dan
                 <strong>Tunjangan PPh/Tunjangan Khusus</strong> tiap dinas (tidak ikut dipotong proporsional kalau
                 kantong kurang). Dua rekening ini paling sering kurang walau sudah dapat acress.
+                Hanya untuk golongan yang memang ada pegawainya &mdash; dinas tanpa PPPK tidak dapat tambahan di
+                rekening PPPK.
               </div>
             </div>
             <el-alert v-if="skpdTrenNaik.length" type="warning" :closable="false" style="flex: 1; min-width: 260px;">
@@ -930,7 +1128,8 @@ async function exportExcel() {
           <div style="font-size: 14px; font-weight: 700; color: #303133; margin-bottom: 4px;">Rekap per Golongan Pegawai</div>
           <p style="margin: 0 0 12px; font-size: 12px; color: #909399;">
             Dipisah dari segmen terakhir kode rekening (&hellip;{{ akhir.golongan.map(g => g.kunci).join(', &hellip;') }}) —
-            seluruh rekening PNS berkumpul sendiri dan PPPK sendiri.
+            seluruh rekening PNS berkumpul sendiri dan PPPK sendiri. Kolom polos = sisi rumus (realisasi + tren),
+            kolom bertanda <strong>(Sim)</strong> = rantai hitungan yang sama dari isian Sim Gaji.
           </p>
           <el-table
             :data="akhir.golongan"
@@ -991,6 +1190,33 @@ async function exportExcel() {
                     </span>
                   </template>
                 </el-table-column>
+                <el-table-column v-if="adaSim" label="Kebutuhan (Sim)" prop="kebutuhanSim" min-width="140" align="right" sortable>
+                  <template #default="{ row }">
+                    <div style="font-variant-numeric: tabular-nums;">{{ formatRp(row.kebutuhanSim) }}</div>
+                    <div style="font-size: 10px;" :style="{ color: warnaPergeseran(row.kebutuhanSim - row.kebutuhan) }">
+                      {{ formatSelisih(row.kebutuhanSim - row.kebutuhan) }} vs rumus
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="adaSim" label="Acress (Sim)" prop="cadanganAkhirSim" min-width="125" align="right" sortable>
+                  <template #default="{ row }">
+                    <div style="font-variant-numeric: tabular-nums; color: #e6a23c;">{{ formatRp(row.cadanganAkhirSim) }}</div>
+                    <div style="font-size: 10px; color: #a8abb2;">{{ formatPersen(akhir.persenAkhirSim) }}</div>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="adaSim" label="Usulan (Sim)" prop="alokasiSim" min-width="140" align="right" sortable>
+                  <template #default="{ row }">
+                    <div style="font-variant-numeric: tabular-nums; font-weight: 700;">{{ formatRp(row.alokasiSim) }}</div>
+                    <div style="font-size: 10px; color: #a8abb2;">kebutuhan sim + acress</div>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="adaSim" label="Pergeseran (Sim)" prop="pergeseranSim" min-width="140" align="right" sortable>
+                  <template #default="{ row }">
+                    <span :style="{ color: warnaPergeseran(row.pergeseranSim), fontWeight: 700, fontVariantNumeric: 'tabular-nums' }">
+                      {{ formatSelisih(row.pergeseranSim) }}
+                    </span>
+                  </template>
+                </el-table-column>
           </el-table>
         </el-card>
 
@@ -1013,11 +1239,18 @@ async function exportExcel() {
               <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
                 <el-tag :type="g.label === 'PNS' ? 'primary' : 'success'" size="small" effect="dark">{{ g.label }}</el-tag>
                 <span style="font-size: 12px; color: #909399;">{{ g.jumlahRekening }} rekening &bull; kode &hellip;{{ g.kunci }}</span>
-                <span style="font-size: 12px; color: #606266; margin-left: auto;">
-                  Kebutuhan {{ formatRp(g.kebutuhan) }} + acress {{ formatRp(g.cadanganAkhir) }} =
-                  <strong>{{ formatRp(g.alokasi) }}</strong>
-                  (<span :style="{ color: warnaPergeseran(g.pergeseran) }">{{ formatSelisih(g.pergeseran) }}</span>)
-                </span>
+                <div style="margin-left: auto; text-align: right; line-height: 1.5;">
+                  <div style="font-size: 12px; color: #606266;">
+                    Kebutuhan {{ formatRp(g.kebutuhan) }} + acress {{ formatRp(g.cadanganAkhir) }} =
+                    <strong>{{ formatRp(g.alokasi) }}</strong>
+                    (<span :style="{ color: warnaPergeseran(g.pergeseran) }">{{ formatSelisih(g.pergeseran) }}</span>)
+                  </div>
+                  <div v-if="adaSim" style="font-size: 12px; color: #909399;">
+                    Sim Gaji: {{ formatRp(g.kebutuhanSim) }} + {{ formatRp(g.cadanganAkhirSim) }} =
+                    <strong>{{ formatRp(g.alokasiSim) }}</strong>
+                    (<span :style="{ color: warnaPergeseran(g.pergeseranSim) }">{{ formatSelisih(g.pergeseranSim) }}</span>)
+                  </div>
+                </div>
               </div>
               <el-table
                 :data="rekeningRekapGolongan(g.kunci)"
@@ -1080,6 +1313,33 @@ async function exportExcel() {
                   <template #default="{ row }">
                     <span :style="{ color: warnaPergeseran(row.pergeseran), fontWeight: 700, fontVariantNumeric: 'tabular-nums' }">
                       {{ formatSelisih(row.pergeseran) }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="adaSim" label="Kebutuhan (Sim)" prop="kebutuhanSim" min-width="140" align="right" sortable>
+                  <template #default="{ row }">
+                    <div style="font-variant-numeric: tabular-nums;">{{ formatRp(row.kebutuhanSim) }}</div>
+                    <div style="font-size: 10px;" :style="{ color: warnaPergeseran(row.kebutuhanSim - row.kebutuhan) }">
+                      {{ formatSelisih(row.kebutuhanSim - row.kebutuhan) }} vs rumus
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="adaSim" label="Acress (Sim)" prop="cadanganAkhirSim" min-width="125" align="right" sortable>
+                  <template #default="{ row }">
+                    <div style="font-variant-numeric: tabular-nums; color: #e6a23c;">{{ formatRp(row.cadanganAkhirSim) }}</div>
+                    <div style="font-size: 10px; color: #a8abb2;">{{ formatPersen(akhir.persenAkhirSim) }}</div>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="adaSim" label="Usulan (Sim)" prop="alokasiSim" min-width="140" align="right" sortable>
+                  <template #default="{ row }">
+                    <div style="font-variant-numeric: tabular-nums; font-weight: 700;">{{ formatRp(row.alokasiSim) }}</div>
+                    <div style="font-size: 10px; color: #a8abb2;">kebutuhan sim + acress</div>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="adaSim" label="Pergeseran (Sim)" prop="pergeseranSim" min-width="140" align="right" sortable>
+                  <template #default="{ row }">
+                    <span :style="{ color: warnaPergeseran(row.pergeseranSim), fontWeight: 700, fontVariantNumeric: 'tabular-nums' }">
+                      {{ formatSelisih(row.pergeseranSim) }}
                     </span>
                   </template>
                 </el-table-column>
@@ -1155,11 +1415,18 @@ async function exportExcel() {
                   <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap;">
                     <el-tag :type="g.label === 'PNS' ? 'primary' : 'success'" size="small" effect="dark">{{ g.label }}</el-tag>
                     <span style="font-size: 11px; color: #909399;">{{ g.jumlahRekening }} rekening</span>
-                    <span style="font-size: 11px; color: #606266; margin-left: auto;">
-                      Kebutuhan {{ formatRp(g.kebutuhan) }} + acress {{ formatRp(g.cadanganAkhir) }} =
-                      <strong>{{ formatRp(g.alokasi) }}</strong>
-                      (<span :style="{ color: warnaPergeseran(g.pergeseran) }">{{ formatSelisih(g.pergeseran) }}</span>)
-                    </span>
+                    <div style="margin-left: auto; text-align: right; line-height: 1.5;">
+                      <div style="font-size: 11px; color: #606266;">
+                        Kebutuhan {{ formatRp(g.kebutuhan) }} + acress {{ formatRp(g.cadanganAkhir) }} =
+                        <strong>{{ formatRp(g.alokasi) }}</strong>
+                        (<span :style="{ color: warnaPergeseran(g.pergeseran) }">{{ formatSelisih(g.pergeseran) }}</span>)
+                      </div>
+                      <div v-if="adaSim" style="font-size: 11px; color: #909399;">
+                        Sim Gaji: {{ formatRp(g.kebutuhanSim) }} + {{ formatRp(g.cadanganAkhirSim) }} =
+                        <strong>{{ formatRp(g.alokasiSim) }}</strong>
+                        (<span :style="{ color: warnaPergeseran(g.pergeseranSim) }">{{ formatSelisih(g.pergeseranSim) }}</span>)
+                      </div>
+                    </div>
                   </div>
                   <el-table :data="rekeningGolongan(row, g.kunci)" size="small" class="tabel-rapat"
                     style="width: 100%;" :row-class-name="kelasBarisAkhir">
@@ -1338,6 +1605,355 @@ async function exportExcel() {
         </el-table>
       </el-tab-pane>
 
+      <!-- Cek Inputan: usulan proyeksi vs pagu yang sudah benar-benar diinput -->
+      <el-tab-pane name="inputan">
+        <template #label>
+          Cek Inputan
+          <el-badge v-if="banding && jumlahSignifikan" :value="jumlahSignifikan"
+            type="danger" class="lencana-sim" />
+        </template>
+
+        <el-card style="margin-bottom: 16px;">
+          <p style="margin: 0 0 12px; font-size: 12px; color: #606266; line-height: 1.7;">
+            Sesudah usulan di tab <strong>Proyeksi Akhir</strong> diinput ke SIPD, unggah kembali berkas
+            <strong>rekap anggaran</strong> hasil inputnya di sini &mdash; tiap rekening tiap dinas diadu satu-satu
+            dengan angka usulannya, jadi yang salah ketik atau belum sempat diinput langsung kelihatan.
+            Berkasnya sama dengan yang dipakai menu <strong>Anggaran Rekap</strong> (rekap4/rekap5).
+          </p>
+          <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px;">
+            <template #title>
+              <span style="font-size: 12px;">
+                File pembanding dibaca <strong>di browser saja</strong> dan tidak disimpan ke server.
+              </span>
+            </template>
+            <div style="font-size: 12px; line-height: 1.7;">
+              Ini disengaja: kolom Pagu di seluruh perhitungan proyeksi berasal dari tabel Anggaran Rekap, jadi kalau
+              file ini ikut disimpan, pagunya berubah &rarr; usulannya ikut berubah &rarr; yang dibandingkan jadi
+              dirinya sendiri. Untuk benar-benar memperbarui pagu di aplikasi, lewat menu Anggaran Rekap seperti biasa.
+            </div>
+          </el-alert>
+          <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;">
+            <div>
+              <div style="font-size: 12px; color: #606266; margin-bottom: 6px;">Berkas hasil input</div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <el-upload :auto-upload="false" :show-file-list="false" accept=".xlsx,.xls"
+                  :on-change="handleImportInputan">
+                  <el-button type="primary" :icon="Upload" :loading="membacaInputan">
+                    {{ inputan ? 'Ganti berkas' : 'Pilih berkas rekap anggaran' }}
+                  </el-button>
+                </el-upload>
+                <el-button v-if="inputan" link type="danger" @click="lupakanInputan">Lupakan</el-button>
+              </div>
+              <div v-if="inputan" style="font-size: 11px; color: #909399; margin-top: 6px; max-width: 420px; line-height: 1.6;">
+                <strong>{{ inputan.namaBerkas }}</strong> &bull; {{ inputan.jumlahRekening }} rekening
+                dari {{ inputan.jumlahDinas }} dinas &bull; total pagu {{ formatRp(inputan.totalPagu) }}
+                <template v-if="inputan.barisData > inputan.barisTerpakai">
+                  <br />{{ (inputan.barisData - inputan.barisTerpakai).toLocaleString('id-ID') }} baris lain di berkas
+                  itu di luar awalan {{ data.prefix }} &mdash; diabaikan.
+                </template>
+              </div>
+            </div>
+            <div>
+              <div style="font-size: 12px; color: #606266; margin-bottom: 6px;">Diadu dengan usulan versi</div>
+              <el-radio-group v-model="bandingSisi" size="small">
+                <el-radio-button value="rumus">Rumus</el-radio-button>
+                <el-radio-button value="sim" :disabled="!adaSim">Sim Gaji</el-radio-button>
+              </el-radio-group>
+              <div style="font-size: 11px; color: #909399; margin-top: 6px; max-width: 320px; line-height: 1.6;">
+                Pilih yang benar-benar kamu pakai waktu menginput. Acress yang terpakai sekarang
+                <strong>{{ formatPersen(bandingSisi === 'sim' ? akhir.persenAkhirSim : akhir.persenAkhir) }}</strong> &mdash;
+                kalau waktu input pakai acress lain, angkanya wajar beda.
+              </div>
+            </div>
+            <div>
+              <div style="font-size: 12px; color: #606266; margin-bottom: 6px;">Toleransi</div>
+              <el-input-number v-model="toleransiInputan" :min="0" :step="1000" :precision="0"
+                size="small" controls-position="right" style="width: 140px;" />
+              <div style="font-size: 11px; color: #909399; margin-top: 6px; max-width: 300px; line-height: 1.6;">
+                rupiah &mdash; selisih di bawah ini dihitung <strong>SESUAI</strong>. Naikkan kalau waktu input
+                angkanya dibulatkan ke ribuan.
+              </div>
+            </div>
+            <div>
+              <div style="font-size: 12px; color: #606266; margin-bottom: 6px;">Batas selisih total</div>
+              <el-input-number v-model="toleransiTotal" :min="0" :step="100000" :precision="0"
+                size="small" controls-position="right" style="width: 160px;" />
+              <div style="font-size: 11px; color: #909399; margin-top: 6px; max-width: 320px; line-height: 1.6;">
+                rupiah, per dinas per golongan &mdash; kalau <strong>jumlah</strong> inputannya masih dalam batas ini,
+                rekening yang meleset dianggap <strong>saling tutup</strong>: tetap ditampilkan, tapi bukan masalah.
+              </div>
+            </div>
+          </div>
+        </el-card>
+
+        <el-empty v-if="!inputan" description="Belum ada berkas pembanding. Unggah rekap anggaran hasil input di atas." />
+
+        <template v-else>
+          <!-- Ringkasan hasil adu -->
+          <el-card style="margin-bottom: 16px;">
+            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px;">
+              <div>
+                <div style="font-size: 12px; color: #67c23a; font-weight: 600;">Sesuai</div>
+                <div style="font-size: 20px; font-weight: 700;">{{ banding.total.sesuai }}</div>
+                <div style="font-size: 11px; color: #909399;">dari {{ banding.total.jumlah }} rekening</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; color: #f56c6c; font-weight: 600;">Kurang diinput</div>
+                <div style="font-size: 20px; font-weight: 700; color: #f56c6c;">{{ banding.total.kurang }}</div>
+                <div style="font-size: 11px; color: #909399;">{{ formatRp(banding.total.selisihKurang) }}</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; color: #e6a23c; font-weight: 600;">Lebih diinput</div>
+                <div style="font-size: 20px; font-weight: 700; color: #e6a23c;">{{ banding.total.lebih }}</div>
+                <div style="font-size: 11px; color: #909399;">+{{ formatRp(banding.total.selisihLebih) }}</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; color: #909399; font-weight: 600;">Belum ada di berkas</div>
+                <div style="font-size: 20px; font-weight: 700;">{{ banding.total.hilang }}</div>
+                <div style="font-size: 11px; color: #909399;">rekening usulan tanpa pasangan</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; color: #909399; font-weight: 600;">Di luar usulan</div>
+                <div style="font-size: 20px; font-weight: 700;">{{ banding.total.ekstra }}</div>
+                <div style="font-size: 11px; color: #909399;">ada di berkas, tidak di proyeksi</div>
+              </div>
+            </div>
+            <el-divider style="margin: 14px 0;" />
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+              <div>
+                <div style="font-size: 12px; color: #606266; font-weight: 600;">Total Usulan</div>
+                <div style="font-size: 18px; font-weight: 700;">{{ formatRp(banding.total.usulan) }}</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; color: #409eff; font-weight: 600;">Total Diinput</div>
+                <div style="font-size: 18px; font-weight: 700;">{{ formatRp(banding.total.inputan) }}</div>
+              </div>
+              <div>
+                <div style="font-size: 12px; font-weight: 600;" :style="{ color: warnaPergeseran(banding.total.selisih) }">
+                  Selisih
+                </div>
+                <div style="font-size: 18px; font-weight: 700;" :style="{ color: warnaPergeseran(banding.total.selisih) }">
+                  {{ formatSelisih(banding.total.selisih) }}
+                </div>
+              </div>
+            </div>
+          </el-card>
+
+          <el-alert v-if="banding.jumlahDibawahKebutuhan" type="error" :closable="false" show-icon
+            style="margin-bottom: 16px;">
+            <template #title>
+              {{ banding.jumlahDibawahKebutuhan }} rekening diinput <strong>di bawah kebutuhan riilnya</strong>
+              sampai Desember &mdash; bukan cuma kehilangan acress.
+            </template>
+            <template #default>
+              <div style="font-size: 12px; line-height: 1.7;">
+                Kekurangan di bawah garis kebutuhan berarti gajinya memang tidak akan cukup sampai tutup tahun,
+                bukan sekadar meleset dari usulan &mdash; walau di matriks dinasnya terbaca saling tutup.
+              </div>
+              <table class="daftar-dibawah">
+                <tr>
+                  <th>Perangkat Daerah</th><th>Rekening</th>
+                  <th>Kebutuhan s.d. Des</th><th>Diinput</th><th>Kurang</th>
+                </tr>
+                <tr v-for="r in barisDibawahKebutuhan" :key="r.kunci">
+                  <td>{{ r.namaSkpd }}</td>
+                  <td>{{ r.namaRekening }}</td>
+                  <td>{{ formatRp(r.kebutuhan) }}</td>
+                  <td>{{ formatRp(r.inputan) }}</td>
+                  <td style="font-weight: 700;">{{ formatSelisih(r.inputan - r.kebutuhan) }}</td>
+                </tr>
+              </table>
+            </template>
+          </el-alert>
+
+          <!-- Kesimpulan di tingkat total: ada selisih signifikan atau tidak -->
+          <el-card style="margin-bottom: 16px;">
+            <div style="font-size: 14px; font-weight: 700; color: #303133; margin-bottom: 4px;">
+              Secara total, ada selisih signifikan?
+            </div>
+            <p style="margin: 0 0 12px; font-size: 12px; color: #909399; line-height: 1.6;">
+              Dinilai per dinas per golongan. Rekening yang meleset tapi jumlah dinasnya tetap pas
+              (dalam batas {{ formatRp(toleransiTotal) }}) = <strong>saling tutup</strong>, dibiarkan.
+              Saling tutup hanya di dalam golongan yang sama &mdash; PNS tidak menutup PPPK.
+            </p>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px;">
+              <div v-for="m in matriks" :key="m.kunci" class="vonis-golongan"
+                :class="m.dinasSignifikan ? 'vonis-merah' : m.dinasSalingTutup ? 'vonis-kuning' : 'vonis-hijau'">
+                <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px;">
+                  <span style="font-size: 15px; font-weight: 700;">{{ m.label }}</span>
+                  <span style="font-size: 12px; font-weight: 700;">
+                    {{ m.dinasSignifikan ? `${m.dinasSignifikan} dinas SIGNIFIKAN`
+                      : m.dinasSalingTutup ? 'Tidak signifikan — hanya saling tutup' : 'Semua cocok' }}
+                  </span>
+                </div>
+                <div class="vonis-angka">
+                  <span>Hitungan</span><strong>{{ formatRp(m.jumlahHitungan) }}</strong>
+                  <span>Inputan</span><strong>{{ formatRp(m.jumlahInputan) }}</strong>
+                  <span>Selisih total</span>
+                  <strong :style="{ color: warnaPergeseran(m.selisih) }">{{ formatSelisih(m.selisih) }}</strong>
+                </div>
+                <div style="font-size: 11px; color: #606266; margin-top: 6px; line-height: 1.6;">
+                  {{ m.baris.length - m.dinasSalah }} dinas cocok &bull;
+                  {{ m.dinasSalingTutup }} saling tutup ({{ m.selSalingTutup }} rekening) &bull;
+                  {{ m.dinasSignifikan }} signifikan<template v-if="m.dinasSignifikan">
+                    (bersih {{ formatSelisih(m.selisihSignifikan) }})</template>
+                  <template v-if="!m.totalSignifikan && m.dinasSignifikan">
+                    <br />Total golongan pas, tapi karena dinas yang lebih menutup dinas yang kurang &mdash;
+                    tiap dinas tetap perlu dibetulkan.
+                  </template>
+                </div>
+              </div>
+            </div>
+          </el-card>
+
+          <!-- Matriks: perangkat daerah × komponen, per golongan -->
+          <el-card style="margin-bottom: 16px;">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px;">
+              <span style="font-size: 14px; font-weight: 700; color: #303133;">Matriks Hitungan vs Inputan</span>
+              <el-radio-group v-model="golMatriks" size="small">
+                <el-radio-button v-for="m in matriks" :key="m.kunci" :value="m.kunci">
+                  {{ m.label }}
+                  <span v-if="m.jumlahSalah" style="color: #f56c6c; font-weight: 700;">&nbsp;{{ m.jumlahSalah }}</span>
+                </el-radio-button>
+              </el-radio-group>
+              <el-radio-group v-model="tampilMatriks" size="small">
+                <el-radio-button value="cocok">Perbandingan</el-radio-button>
+                <el-radio-button value="hitungan">Hitungan</el-radio-button>
+                <el-radio-button value="inputan">Inputan</el-radio-button>
+                <el-radio-button value="selisih">Selisih</el-radio-button>
+              </el-radio-group>
+              <el-select v-model="saringMatriks" size="small" style="width: 190px;">
+                <el-option value="semua" label="Semua dinas" />
+                <el-option value="beda" label="Yang ada FALSE" />
+                <el-option value="signifikan" label="Hanya yang signifikan" />
+              </el-select>
+              <el-button type="success" plain size="small" :icon="Download" :loading="exportingMatriks"
+                style="margin-left: auto;" @click="exportMatriks">
+                Ekspor Excel
+              </el-button>
+            </div>
+            <p style="margin: 0 0 10px; font-size: 12px; color: #909399; line-height: 1.6;">
+              Susunannya sama dengan lembar kerja manual: baris perangkat daerah, kolom komponen gaji.
+              <strong>TRUE</strong> = selisih inputan dengan hitungan &le; toleransi. Arahkan kursor ke sel untuk melihat
+              kedua angkanya. File Excel-nya memuat blok Hitungan, Inputan, Perbandingan (rumus TRUE/FALSE), dan Selisih.
+            </p>
+            <el-table v-if="matriksAktif" :data="barisMatriks" row-key="kodeSkpd" border size="small"
+              class="tabel-rapat tabel-matriks" style="width: 100%;" max-height="640"
+              show-summary :summary-method="ringkasMatriks"
+              :header-cell-style="{ background: '#f5f7fa', color: '#606266', fontSize: '12px', fontWeight: '600' }">
+              <el-table-column label="Perangkat Daerah" prop="namaSkpd" min-width="220" fixed show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span style="font-size: 12px; color: #303133;">{{ row.namaSkpd }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column v-for="k in matriksAktif.kolom" :key="k.kode" :column-key="k.kode"
+                :min-width="tampilMatriks === 'cocok' ? 96 : 130" align="center">
+                <template #header>
+                  <el-tooltip :content="`${k.nama} (${k.kodeAsli})`" placement="top">
+                    <span>{{ k.label }}</span>
+                  </el-tooltip>
+                </template>
+                <template #default="{ row }">
+                  <template v-if="row.sel[k.kode]">
+                    <span v-if="tampilMatriks === 'cocok'" :title="judulSelMatriks(row.sel[k.kode])"
+                      :class="kelasSelMatriks(row, row.sel[k.kode])">
+                      {{ row.sel[k.kode].cocok ? 'TRUE' : 'FALSE' }}
+                    </span>
+                    <span v-else :title="judulSelMatriks(row.sel[k.kode])"
+                      style="display: block; text-align: right; font-variant-numeric: tabular-nums; font-size: 12px;"
+                      :style="{
+                        color: tampilMatriks === 'selisih' ? warnaPergeseran(nilaiSelMatriks(row.sel[k.kode]))
+                          : !row.sel[k.kode].cocok ? '#f56c6c' : '#303133',
+                        fontWeight: row.sel[k.kode].cocok ? 400 : 700,
+                      }">
+                      {{ tampilMatriks === 'selisih' ? formatSelisih(nilaiSelMatriks(row.sel[k.kode]))
+                        : formatRp(nilaiSelMatriks(row.sel[k.kode])) }}
+                    </span>
+                  </template>
+                  <span v-else style="color: #dcdfe6;">&mdash;</span>
+                </template>
+              </el-table-column>
+              <el-table-column :label="tampilMatriks === 'cocok' ? 'Total dinas' : 'Jumlah'" column-key="__semua"
+                :min-width="tampilMatriks === 'cocok' ? 120 : 150" align="center" fixed="right">
+                <template #default="{ row }">
+                  <span v-if="tampilMatriks === 'cocok'" :class="LABEL_STATUS_TOTAL[row.status].kelas"
+                    :title="`${row.salah} rekening FALSE • selisih jumlah ${formatSelisih(row.selisih)}`">
+                    {{ LABEL_STATUS_TOTAL[row.status].teks }}
+                  </span>
+                  <span v-else style="display: block; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; font-size: 12px;"
+                    :style="{ color: tampilMatriks === 'selisih' ? warnaPergeseran(row.selisih) : '#303133' }">
+                    {{ tampilMatriks === 'hitungan' ? formatRp(row.jumlahHitungan)
+                      : tampilMatriks === 'inputan' ? formatRp(row.jumlahInputan) : formatSelisih(row.selisih) }}
+                  </span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+
+          <!-- Ringkasan per dinas -->
+          <el-card style="margin-bottom: 16px;">
+            <div style="font-size: 14px; font-weight: 700; color: #303133; margin-bottom: 4px;">Per Dinas</div>
+            <p style="margin: 0 0 12px; font-size: 12px; color: #909399;">
+              Diurut dari yang paling perlu ditengok &mdash; dinas yang seluruh rekeningnya sudah sesuai turun ke bawah.
+            </p>
+            <el-table :data="banding.dinas" row-key="kodeSkpd" border size="small" class="tabel-rapat"
+              style="width: 100%;"
+              :header-cell-style="{ background: '#f5f7fa', color: '#606266', fontSize: '12px', fontWeight: '600' }">
+              <el-table-column label="SKPD" min-width="200" show-overflow-tooltip sortable :sort-by="'namaSkpd'">
+                <template #default="{ row }">
+                  <div style="font-weight: 600; font-size: 13px; color: #303133;">
+                    {{ row.namaSkpd }}
+                    <el-tag v-if="row.terkunci" type="info" size="small" effect="plain" style="margin-left: 4px;">DIKUNCI</el-tag>
+                  </div>
+                  <div style="font-size: 11px; color: #c0c4cc; font-family: monospace;">{{ row.kodeSkpd }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="Rek" prop="jumlah" width="55" align="center" />
+              <el-table-column label="Sesuai" prop="sesuai" width="70" align="center" sortable>
+                <template #default="{ row }">
+                  <span :style="{ color: row.sesuai === row.jumlah ? '#67c23a' : '#909399', fontWeight: 700 }">
+                    {{ row.sesuai }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Kurang" prop="kurang" width="70" align="center" sortable>
+                <template #default="{ row }">
+                  <span :style="{ color: row.kurang ? '#f56c6c' : '#c0c4cc', fontWeight: 700 }">{{ row.kurang }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Lebih" prop="lebih" width="70" align="center" sortable>
+                <template #default="{ row }">
+                  <span :style="{ color: row.lebih ? '#e6a23c' : '#c0c4cc', fontWeight: 700 }">{{ row.lebih }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Belum ada" prop="hilang" width="85" align="center" sortable>
+                <template #default="{ row }">
+                  <span :style="{ color: row.hilang ? '#909399' : '#c0c4cc', fontWeight: 700 }">{{ row.hilang }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Usulan" prop="usulan" min-width="140" align="right" sortable>
+                <template #default="{ row }">
+                  <span style="font-variant-numeric: tabular-nums;">{{ formatRp(row.usulan) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Diinput" prop="inputan" min-width="140" align="right" sortable>
+                <template #default="{ row }">
+                  <span style="font-variant-numeric: tabular-nums;">{{ formatRp(row.inputan) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Selisih" prop="selisih" min-width="140" align="right" sortable>
+                <template #default="{ row }">
+                  <span :style="{ color: warnaPergeseran(row.selisih), fontWeight: 700, fontVariantNumeric: 'tabular-nums' }">
+                    {{ formatSelisih(row.selisih) }}
+                  </span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+
+        </template>
+      </el-tab-pane>
+
     </el-tabs>
   </div>
 </template>
@@ -1367,6 +1983,77 @@ async function exportExcel() {
 }
 .tab-proyeksi :deep(.el-tabs__item) {
   font-weight: 600;
+}
+
+/* Matriks Cek Inputan: hasil adu TRUE/FALSE, warnanya meniru format bersyarat Excel. */
+.sel-true,
+.sel-false {
+  display: inline-block;
+  min-width: 52px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: default;
+}
+.sel-tutup {
+  display: inline-block;
+  min-width: 52px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: default;
+  color: #b54708;
+  background: #fdf3e3;
+}
+.sel-true {
+  color: #067647;
+  background: #eaf7ec;
+}
+.sel-false {
+  color: #b42318;
+  background: #fde7e9;
+}
+
+/* Daftar rekening di bawah kebutuhan, di dalam peringatan Cek Inputan. */
+.daftar-dibawah {
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.daftar-dibawah th,
+.daftar-dibawah td {
+  padding: 2px 10px 2px 0;
+  text-align: left;
+  vertical-align: top;
+}
+.daftar-dibawah th:nth-child(n + 3),
+.daftar-dibawah td:nth-child(n + 3) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Kesimpulan total per golongan di tab Cek Inputan. */
+.vonis-golongan {
+  padding: 10px 12px;
+  border-radius: 4px;
+  border-left: 4px solid;
+}
+.vonis-hijau { background: #eaf7ec; border-color: #67c23a; color: #067647; }
+.vonis-kuning { background: #fdf3e3; border-color: #e6a23c; color: #b54708; }
+.vonis-merah { background: #fde7e9; border-color: #f56c6c; color: #b42318; }
+.vonis-angka {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  font-size: 12px;
+  color: #606266;
+}
+.vonis-angka strong {
+  text-align: right;
+  color: #303133;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Lencana jumlah dinas yang sudah terisi Sim Gaji, di label tab. */

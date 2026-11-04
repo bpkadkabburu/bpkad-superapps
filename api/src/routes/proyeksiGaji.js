@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { klausaAwalanRekening, subRincianRekening } from '../utils/kodeRekening.js'
+import { hitungKesiapanRekening } from '../utils/kesiapanRekening.js'
 import { hitungProyeksiAkhir } from '../utils/proyeksiAkhir.js'
 import { ambilSimGaji } from '../utils/simGaji.js'
 
@@ -499,6 +500,15 @@ router.get('/', async (c) => {
     persen: c.req.query('persen'),
     tambahanFix: c.req.query('tambahanFix'),
   })
+  // Lembar kesiapan rekening — dihitung dari `hasil.skpd` yang SAMA dengan
+  // hitungProyeksiAkhir di atas, tanpa query ulang: dasarnya kebutuhan per
+  // rekening yang sudah ada di situ, yang dibedakan cuma pertanyaannya
+  // (kapan mentok & ambil dari mana, bukan berapa alokasi akhirnya).
+  // Sengaja TIDAK meneruskan `persen`: acress milik usulan alokasi, bukan milik
+  // lembar kesiapan. Di sini proyeksi akhir harus polos (realisasi + sim × sisa
+  // bulan) supaya bisa diadu dengan proyeksi versi dinas; cadangannya diuji
+  // lewat sel Acress di sheet RINGKASAN kalau memang perlu.
+  hasil.kesiapan = hitungKesiapanRekening(hasil)
   return c.json(hasil)
 })
 

@@ -107,6 +107,36 @@ cek('huruf pada kode rekening diabaikan', hurufIkut.total === perRek.total, `${h
 const wildcardKode = await ambil('', { kodeRekening: '5.1.01.01%' })
 cek('wildcard pada kode rekening tidak lolos', wildcardKode.total === perRek.total, `${wildcardKode.total}`)
 
+console.log('\nFilter beberapa kode rekening sekaligus')
+const perRekB = await ambil('', { kodeRekening: '5.1.02.01' })
+const rekBerdua = await ambil('', { kodeRekening: '5.1.01.01, 5.1.02.01', pageSize: 200 })
+cek('dokumen gabungan hanya dari kedua rekening',
+  rekBerdua.data.every(r => String(r.kode_rekening).startsWith('5.1.01.01') ||
+    String(r.kode_rekening).startsWith('5.1.02.01')), `${rekBerdua.total} dokumen`)
+cek('total gabungan = jumlah kedua rekening (tidak berpotongan)',
+  rekBerdua.total === perRek.total + perRekB.total,
+  `${perRek.total} + ${perRekB.total} = ${rekBerdua.total}`)
+cek('nilai gabungan = jumlah nilai kedua rekening',
+  Math.round(rekBerdua.ringkasan.nilai) ===
+    Math.round(perRek.ringkasan.nilai + perRekB.ringkasan.nilai))
+
+const rekBertumpuk = await ambil('', { kodeRekening: '5.1.01,5.1.01.01' })
+cek('awalan bertumpuk tidak menggandakan dokumen',
+  rekBertumpuk.total === (await ambil('', { kodeRekening: '5.1.01' })).total,
+  `${rekBertumpuk.total} dokumen`)
+cek('entri kosong & kembar pada daftar diabaikan',
+  (await ambil('', { kodeRekening: '5.1.01.01,, ,5.1.01.01' })).total === perRek.total)
+
+const rekapBerdua = await ambil('/rekap-rekening', { kodeRekening: '5.1.01.01,5.1.02.01' })
+cek('rekap rekening ikut daftar rekening',
+  Math.round(rekapBerdua.ringkasan.nilai) === Math.round(rekBerdua.ringkasan.nilai),
+  `${rekapBerdua.data.length} rekening`)
+const kelBerdua = await ambil('/kelengkapan', { kodeRekening: '5.1.01.01,5.1.02.01' })
+cek('matriks kelengkapan ikut daftar rekening',
+  kelBerdua.skpd.reduce((a, x) => a + x.dokumen, 0) === rekBerdua.total)
+const eksporBerdua = await ambil('/ekspor', { kodeRekening: '5.1.01.01,5.1.02.01' })
+cek('ekspor ikut daftar rekening', eksporBerdua.total === rekBerdua.total)
+
 console.log('\nMatriks kelengkapan')
 const kel = await ambil('/kelengkapan')
 const jumlahSel = kel.skpd.reduce((a, s) => a + Object.keys(s.perBulan).length, 0)

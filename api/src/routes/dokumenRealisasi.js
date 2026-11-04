@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { syncDokumenRealisasi } from './sync.js'
-import { klausaAwalanRekening, normalKodeRekening } from '../utils/kodeRekening.js'
+import { daftarAwalanRekening, klausaAwalanRekeningBanyak, normalKodeRekening } from '../utils/kodeRekening.js'
 
 const router = new Hono()
 router.use('*', requireAuth)
@@ -12,10 +12,11 @@ router.post('/', syncDokumenRealisasi)
 
 const SP2D_ADA = `dr.nomor_sp2d IS NOT NULL AND LOWER(TRIM(dr.nomor_sp2d)) NOT IN ('', 'null', '-')`
 
-// Kode rekening dipakai sebagai awalan (5.1.01.01 mencakup seluruh rinciannya),
-// jadi isinya dibatasi angka dan titik supaya wildcard LIKE tidak bisa disuntik.
-function bersihkanKode(raw) {
-  return String(raw || '').replace(/[^0-9.]/g, '')
+// Filter rekening boleh berisi beberapa kode sekaligus: dikirim sebagai satu
+// query dipisah koma (kodeRekening=5.1.01,5.1.02) atau query yang berulang.
+// Tiap kode tetap dipakai sebagai AWALAN — 5.1.01.01 mencakup seluruh rinciannya.
+function kodeRekeningFilter(c) {
+  return daftarAwalanRekening(c.req.queries('kodeRekening'))
 }
 
 function escapeLike(raw) {
@@ -65,10 +66,10 @@ function bangunFilter(c, { abaikanBulan = false } = {}) {
     params.push(kodeSubSkpd)
   }
 
-  const kodeRekening = bersihkanKode(c.req.query('kodeRekening'))
-  if (kodeRekening) {
-    // Semua varian lebar digit ikut dicocokkan (format 2026+ vs 2024–2025).
-    const awalan = klausaAwalanRekening('dr.kode_rekening', kodeRekening)
+  // Baris lolos kalau cocok dengan salah satu rekening yang dipilih. Semua
+  // varian lebar digit ikut dicocokkan (format 2026+ vs 2024–2025).
+  const awalan = klausaAwalanRekeningBanyak('dr.kode_rekening', kodeRekeningFilter(c))
+  if (awalan) {
     klausa.push(awalan.sql)
     params.push(...awalan.params)
   }
@@ -235,11 +236,10 @@ router.get('/rekap-rekening', async (c) => {
   // Pagu hanya ikut disaring oleh hal yang memang punya arti di sisi anggaran.
   const paguKlausa = []
   const paguParams = [tahun_id]
-  const kodeRekening = bersihkanKode(c.req.query('kodeRekening'))
-  if (kodeRekening) {
-    const awalan = klausaAwalanRekening('kode_rekening', kodeRekening)
-    paguKlausa.push(awalan.sql)
-    paguParams.push(...awalan.params)
+  const awalanPagu = klausaAwalanRekeningBanyak('kode_rekening', kodeRekeningFilter(c))
+  if (awalanPagu) {
+    paguKlausa.push(awalanPagu.sql)
+    paguParams.push(...awalanPagu.params)
   }
   const kodeSubSkpd = c.req.query('kodeSubSkpd')
   if (kodeSubSkpd) { paguKlausa.push('kode_sub_unit = ?'); paguParams.push(kodeSubSkpd) }
@@ -312,15 +312,14 @@ router.get('/kelengkapan', async (c) => {
   const tahun_id = await idTahun(c.req.query('tahun'))
   if (!tahun_id) return c.json({ skpd: [], perBulan: [], bulanAda: [] })
 
-  const kodeRekening = bersihkanKode(c.req.query('kodeRekening'))
   const kodeSubSkpd = c.req.query('kodeSubSkpd')
 
   const paguKlausa = []
   const paguParams = [tahun_id]
-  if (kodeRekening) {
-    const awalan = klausaAwalanRekening('kode_rekening', kodeRekening)
-    paguKlausa.push(awalan.sql)
-    paguParams.push(...awalan.params)
+  const awalanPagu = klausaAwalanRekeningBanyak('kode_rekening', kodeRekeningFilter(c))
+  if (awalanPagu) {
+    paguKlausa.push(awalanPagu.sql)
+    paguParams.push(...awalanPagu.params)
   }
   if (kodeSubSkpd) { paguKlausa.push('kode_sub_unit = ?'); paguParams.push(kodeSubSkpd) }
 

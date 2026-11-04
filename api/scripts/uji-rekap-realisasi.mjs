@@ -106,6 +106,36 @@ const hurufIkut = await ambil('', { kodeRekening: '5.1.01abc' })
 cek('huruf pada kode rekening diabaikan',
   dekat(hurufIkut.totals.pagu, perAwalan.totals.pagu))
 
+console.log('\nFilter beberapa kode rekening sekaligus')
+const AWALAN_B = '5.1.02'
+const perAwalanB = await ambil('', { kodeRekening: AWALAN_B })
+const berdua = await ambil('', { kodeRekening: `${AWALAN}, ${AWALAN_B}` })
+const belanjaBerdua = daftarBelanja(berdua.data)
+cek('leaf gabungan hanya berasal dari kedua awalan',
+  belanjaBerdua.length > 0 &&
+  belanjaBerdua.every(n => String(n.kode).startsWith(AWALAN + '.') || String(n.kode).startsWith(AWALAN_B + '.')),
+  `${belanjaBerdua.length} leaf`)
+cek('pagu gabungan = jumlah pagu kedua awalan (tidak berpotongan)',
+  dekat(berdua.totals.pagu, perAwalan.totals.pagu + perAwalanB.totals.pagu),
+  `Rp${rp(berdua.totals.pagu)}`)
+cek('SPP & AKLAP gabungan juga dijumlahkan',
+  dekat(berdua.totals.realisasiSpp, perAwalan.totals.realisasiSpp + perAwalanB.totals.realisasiSpp) &&
+  dekat(berdua.totals.realisasiAklap, perAwalan.totals.realisasiAklap + perAwalanB.totals.realisasiAklap))
+
+// Awalan yang bertumpuk tidak boleh menggandakan apa pun — ini penyaring baris.
+const bertumpuk = await ambil('', { kodeRekening: `${AWALAN},5.1.01.01` })
+cek('awalan bertumpuk tidak menggandakan nilai',
+  dekat(bertumpuk.totals.pagu, perAwalan.totals.pagu), `Rp${rp(bertumpuk.totals.pagu)}`)
+
+const adaKosong = await ambil('', { kodeRekening: `${AWALAN},,  ,${AWALAN}` })
+cek('entri kosong & kembar pada daftar diabaikan',
+  dekat(adaKosong.totals.pagu, perAwalan.totals.pagu))
+
+const suntikDaftar = await ambil('', { kodeRekening: `${AWALAN},' OR '1'='1` })
+cek('suntikan lewat salah satu entri tidak membuka seluruh data',
+  suntikDaftar.totals.pagu < semua.totals.pagu && suntikDaftar.totals.pagu >= perAwalan.totals.pagu,
+  `Rp${rp(suntikDaftar.totals.pagu)}`)
+
 console.log('\nFilter bulan')
 if (!opsi.bulan.length) {
   console.log('  (tidak ada dokumen realisasi berbulan — bagian ini dilewati)')

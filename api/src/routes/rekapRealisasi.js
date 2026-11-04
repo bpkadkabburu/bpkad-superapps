@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { getAklapRealisasiRows, getSubSkpdToSkpd, mergeAklapIntoLeaves } from './aklapRealisasi.js'
-import { klausaAwalanRekening } from '../utils/kodeRekening.js'
+import { daftarAwalanRekening, klausaAwalanRekeningBanyak } from '../utils/kodeRekening.js'
 
 const router = new Hono()
 router.use('*', requireAuth)
@@ -18,12 +18,6 @@ const LEVELS = [
   { key: 'belanja', badge: 'Belanja', kode: 'kode_rekening', nama: 'nama_rekening' },
 ]
 
-// Kode rekening dipakai sebagai AWALAN (5.1.01 mencakup seluruh rinciannya),
-// jadi isinya dibatasi angka dan titik supaya wildcard LIKE tidak bisa disuntik.
-function bersihkanKode(raw) {
-  return String(raw || '').replace(/[^0-9.]/g, '')
-}
-
 function bulanValid(raw) {
   const n = Number(raw)
   return Number.isInteger(n) && n >= 1 && n <= 12 ? n : null
@@ -33,7 +27,9 @@ function bulanValid(raw) {
 // batas bulan (hanya menyentuh dokumen realisasi — anggaran tidak punya bulan,
 // dan dokumen_aklap disimpan sebagai potret setahun tanpa rincian bulan).
 function bacaFilter(c) {
-  const kodeRekening = bersihkanKode(c.req.query('kodeRekening'))
+  // Boleh lebih dari satu rekening: dipisah koma atau query berulang. Tiap kode
+  // tetap dipakai sebagai AWALAN (5.1.01 mencakup seluruh rinciannya).
+  const kodeRekening = daftarAwalanRekening(c.req.queries('kodeRekening'))
   const bulan = bulanValid(c.req.query('bulan'))
   let bulanDari = bulanValid(c.req.query('bulanDari'))
   let bulanSampai = bulanValid(c.req.query('bulanSampai'))
@@ -47,8 +43,8 @@ function bacaFilter(c) {
 
 // Klausa rekening untuk satu kolom pada tabel mana pun (anggaran/realisasi/aklap).
 function klausaRekening(f, kolom = 'kode_rekening') {
-  if (!f.kodeRekening) return { sql: '', params: [] }
-  const awalan = klausaAwalanRekening(kolom, f.kodeRekening)
+  const awalan = klausaAwalanRekeningBanyak(kolom, f.kodeRekening)
+  if (!awalan) return { sql: '', params: [] }
   return { sql: ` AND ${awalan.sql}`, params: awalan.params }
 }
 

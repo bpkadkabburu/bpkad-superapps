@@ -32,8 +32,10 @@ const PINTASAN_TANGGAL = [
 
 // Filter aktif — dipakai bersama oleh matriks kelengkapan, rekap rekening, dan
 // daftar dokumen. tanggal = [dari, sampai] dalam 'YYYY-MM-DD', boleh kosong.
+// kodeRekening = daftar awalan; kosong berarti semua rekening, lebih dari satu
+// berarti gabungan (dokumen lolos kalau cocok salah satunya).
 const FILTER_KOSONG = () => ({
-  kodeSubSkpd: '', bulan: null, kodeRekening: '', jenisDokumen: '', sp2d: '', q: '', tanggal: null,
+  kodeSubSkpd: '', bulan: null, kodeRekening: [], jenisDokumen: '', sp2d: '', q: '', tanggal: null,
 })
 const filter = ref(FILTER_KOSONG())
 
@@ -65,7 +67,8 @@ function paramsFilter() {
   const p = { tahun: tahun.value }
   if (filter.value.kodeSubSkpd) p.kodeSubSkpd = filter.value.kodeSubSkpd
   if (filter.value.bulan) p.bulan = filter.value.bulan
-  if (filter.value.kodeRekening) p.kodeRekening = filter.value.kodeRekening
+  // Beberapa rekening dikirim sebagai satu parameter dipisah koma.
+  if (filter.value.kodeRekening.length) p.kodeRekening = filter.value.kodeRekening.join(',')
   if (filter.value.jenisDokumen) p.jenisDokumen = filter.value.jenisDokumen
   if (filter.value.sp2d) p.sp2d = filter.value.sp2d
   if (filter.value.q.trim()) p.q = filter.value.q.trim()
@@ -106,7 +109,7 @@ async function loadMatriks() {
   try {
     const p = { tahun: tahun.value }
     if (filter.value.kodeSubSkpd) p.kodeSubSkpd = filter.value.kodeSubSkpd
-    if (filter.value.kodeRekening) p.kodeRekening = filter.value.kodeRekening
+    if (filter.value.kodeRekening.length) p.kodeRekening = filter.value.kodeRekening.join(',')
     if (filter.value.jenisDokumen) p.jenisDokumen = filter.value.jenisDokumen
     if (filter.value.sp2d) p.sp2d = filter.value.sp2d
     const [dari, sampai] = filter.value.tanggal || []
@@ -163,7 +166,7 @@ watch([currentPage, pageSize], loadTabel)
 
 const adaFilter = computed(() => {
   const f = filter.value
-  return !!(f.kodeSubSkpd || f.bulan || f.kodeRekening || f.jenisDokumen || f.sp2d || f.q.trim()
+  return !!(f.kodeSubSkpd || f.bulan || f.kodeRekening.length || f.jenisDokumen || f.sp2d || f.q.trim()
     || f.tanggal?.[0] || f.tanggal?.[1])
 })
 function resetFilter() {
@@ -218,8 +221,14 @@ const barisRekap = computed(() => {
 const jumlahTanpaRealisasi = computed(() =>
   (rekapRekening.value.data || []).filter(r => r.dokumen === 0).length)
 
+// Klik baris rekap menambah/melepas rekening itu dari pilihan — jadi beberapa
+// rekening bisa dikumpulkan langsung dari tabel, bukan cuma dari kotak filter.
+// Array selalu diganti baru supaya watcher filter ikut terpicu.
 function klikRekening(row) {
-  filter.value.kodeRekening = filter.value.kodeRekening === row.kode ? '' : row.kode
+  const dipilih = filter.value.kodeRekening
+  filter.value.kodeRekening = dipilih.includes(row.kode)
+    ? dipilih.filter(k => k !== row.kode)
+    : [...dipilih, row.kode]
 }
 
 function totalRekap({ columns }) {
@@ -376,14 +385,14 @@ function sheetInfo(wb, jumlahDokumen) {
   const ws = wb.addWorksheet('Info Filter')
   ws.columns = [{ width: 24 }, { width: 62 }]
   const namaUnit = opsi.value.skpd.find(o => o.kode === filter.value.kodeSubSkpd)
-  const namaRek = opsi.value.rekening.find(o => o.kode === filter.value.kodeRekening)
+  const daftarRek = filter.value.kodeRekening
+    .map(k => `${k} ${opsi.value.rekening.find(o => o.kode === k)?.nama || ''}`.trim())
   const baris = [
     ['Tahun Anggaran', String(tahun.value)],
     ['Periode', labelPeriode.value],
     ['Unit SKPD', filter.value.kodeSubSkpd
       ? `${namaUnit?.nama || ''} (${filter.value.kodeSubSkpd})`.trim() : 'semua unit'],
-    ['Kode Rekening', filter.value.kodeRekening
-      ? `${filter.value.kodeRekening} ${namaRek?.nama || ''}`.trim() : 'semua rekening'],
+    ['Kode Rekening', daftarRek.length ? daftarRek.join('; ') : 'semua rekening'],
     ['Jenis Dokumen', filter.value.jenisDokumen || 'semua jenis'],
     ['Status SP2D', filter.value.sp2d === 'ada' ? 'sudah SP2D'
       : filter.value.sp2d === 'belum' ? 'belum SP2D' : 'semua'],
@@ -496,7 +505,11 @@ function sheetKelengkapan(wb) {
 function namaBerkas() {
   const bagian = ['dokumen-realisasi', tahun.value]
   if (filter.value.kodeSubSkpd) bagian.push(filter.value.kodeSubSkpd)
-  if (filter.value.kodeRekening) bagian.push(filter.value.kodeRekening)
+  // Lebih dari satu rekening diringkas jadi jumlahnya saja, supaya nama file
+  // tidak jadi sederet kode panjang.
+  const rek = filter.value.kodeRekening
+  if (rek.length === 1) bagian.push(rek[0])
+  else if (rek.length > 1) bagian.push(`${rek.length}rek`)
   if (filter.value.bulan) bagian.push(BULAN_SINGKAT[filter.value.bulan].toLowerCase())
   const [dari, sampai] = filter.value.tanggal || []
   if (dari || sampai) bagian.push(`${dari || 'awal'}_sd_${sampai || 'akhir'}`)
@@ -674,7 +687,9 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
           <el-select
             v-model="filter.kodeRekening"
             placeholder="Semua rekening"
+            multiple collapse-tags collapse-tags-tooltip
             clearable filterable
+            :max-collapse-tags="1"
             style="width:300px;"
           >
             <el-option
@@ -837,7 +852,7 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
 
         <p style="margin:0 0 10px; font-size:12px; color:#909399;">
           Mengikuti seluruh filter di atas, termasuk bulan dan batas tanggal. Klik header kolom untuk mengurutkan
-          (bawaan: nilai realisasi terbesar). Klik baris untuk menyaring daftar dokumen ke rekening itu.
+          (bawaan: nilai realisasi terbesar). Klik baris untuk menambah/melepas rekening itu dari filter — boleh lebih dari satu.
           <strong>Pagu selalu setahun penuh</strong>, jadi % serap pada periode terpotong memang wajar kecil.
         </p>
 
@@ -851,7 +866,7 @@ const adaData = computed(() => total.value > 0 || adaFilter.value || (kelengkapa
           show-summary
           :summary-method="totalRekap"
           :default-sort="{ prop: 'nilai', order: 'descending' }"
-          :row-class-name="({ row }) => (row.kode === filter.kodeRekening ? 'baris-aktif' : '')"
+          :row-class-name="({ row }) => (filter.kodeRekening.includes(row.kode) ? 'baris-aktif' : '')"
           style="width:100%; cursor:pointer;"
           :header-cell-style="{ background:'#f5f7fa', color:'#606266', fontSize:'12px', fontWeight:'600' }"
           @row-click="klikRekening"

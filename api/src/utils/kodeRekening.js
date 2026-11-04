@@ -55,6 +55,17 @@ export function subRincianRekening(kode) {
   return segmenKode(normalKodeRekening(kode))[5] || null
 }
 
+/**
+ * Segmen rincian objek dalam bentuk baku (3 digit), mis. 001.
+ * Di kelompok belanja gaji, segmen inilah yang memisahkan KOMPONEN gaji
+ * (…001 = Gaji Pokok, …002 = Tunjangan Keluarga, dst) — sementara segmen
+ * sesudahnya memisahkan golongan pegawai. Dipakai kesiapanRekening.js untuk
+ * mengenali gaji pokok tanpa mencocokkan nama rekening.
+ */
+export function rincianObjekRekening(kode) {
+  return segmenKode(normalKodeRekening(kode))[4] || null
+}
+
 /** Tingkat hierarki dihitung dari jumlah segmen, jadi tidak tergantung lebar digit. */
 export function tingkatRekening(kode) {
   const n = segmenKode(kode).filter(Boolean).length
@@ -143,6 +154,41 @@ export function klausaAwalanRekening(kolom, awalan) {
   for (const v of varian) {
     bagian.push(`(${kolom} = ? OR ${kolom} LIKE ? ESCAPE '\\\\')`)
     params.push(v, `${escapeLike(v)}.%`)
+  }
+  return { sql: `(${bagian.join(' OR ')})`, params }
+}
+
+/**
+ * Isi filter rekening multi-pilih -> daftar awalan yang bersih dan unik.
+ * Menerima string tunggal, string dipisah koma, atau array dari query berulang.
+ * Isinya dibatasi angka dan titik supaya wildcard LIKE tidak bisa disuntik.
+ */
+export function daftarAwalanRekening(raw) {
+  const mentah = Array.isArray(raw) ? raw : [raw]
+  const bersih = mentah
+    .flatMap(v => String(v ?? '').split(','))
+    .map(v => v.replace(/[^0-9.]/g, '').trim())
+    .filter(Boolean)
+  return [...new Set(bersih)]
+}
+
+/**
+ * Beberapa awalan sekaligus: baris lolos kalau masuk ke SALAH SATU awalan.
+ * Awalan yang saling bertumpuk (5.1.01 dan 5.1.01.01) tidak menggandakan apa
+ * pun — ini penyaring baris, bukan penggabungan tabel.
+ *
+ * @returns {{sql: string, params: string[]}|null} null kalau daftarnya kosong,
+ *   supaya pemanggil cukup melewatkan klausanya.
+ */
+export function klausaAwalanRekeningBanyak(kolom, daftar) {
+  const awalan = daftarAwalanRekening(daftar)
+  if (!awalan.length) return null
+  const bagian = []
+  const params = []
+  for (const a of awalan) {
+    const k = klausaAwalanRekening(kolom, a)
+    bagian.push(k.sql)
+    params.push(...k.params)
   }
   return { sql: `(${bagian.join(' OR ')})`, params }
 }

@@ -27,22 +27,24 @@ const belumSp2dOnly = ref(false)
 // Filter ini dikerjakan di SERVER, beda dengan search & toggle belum SP2D yang
 // cuma memangkas tree di browser. Alasannya: kalau dipangkas di browser, total
 // tiap node tidak ikut menyusut dan angkanya jadi bohong.
-//   - kodeRekening: awalan, jadi 5.1.01 mencakup seluruh rinciannya. Ikut
-//     memotong anggaran, realisasi, maupun AKLAP.
+//   - kodeRekening: daftar awalan, jadi 5.1.01 mencakup seluruh rinciannya dan
+//     beberapa rekening bisa dipilih sekaligus (baris lolos kalau cocok salah
+//     satunya). Ikut memotong anggaran, realisasi, maupun AKLAP.
 //   - bulan / rentang bulan: hanya memotong dokumen realisasi (SPP & SP2D).
 //     Anggaran tidak punya bulan, dan AKLAP disimpan sebagai potret setahun.
-const FILTER_KOSONG = () => ({ kodeRekening: '', bulan: null, bulanDari: null, bulanSampai: null })
+const FILTER_KOSONG = () => ({ kodeRekening: [], bulan: null, bulanDari: null, bulanSampai: null })
 const filter = ref(FILTER_KOSONG())
 const opsi = ref({ rekening: [], bulan: [] })
 
 const adaFilterBulan = computed(() =>
   !!(filter.value.bulan || filter.value.bulanDari || filter.value.bulanSampai))
-const adaFilterServer = computed(() => !!filter.value.kodeRekening || adaFilterBulan.value)
+const adaFilterServer = computed(() => !!filter.value.kodeRekening.length || adaFilterBulan.value)
 
 function paramsFilter() {
   const p = { tahun: tahun.value }
   const f = filter.value
-  if (f.kodeRekening) p.kodeRekening = f.kodeRekening
+  // Beberapa rekening dikirim sebagai satu parameter dipisah koma.
+  if (f.kodeRekening.length) p.kodeRekening = f.kodeRekening.join(',')
   if (f.bulan) {
     p.bulan = f.bulan
   } else {
@@ -231,7 +233,9 @@ function formatRp(val) {
         <el-select
           v-model="filter.kodeRekening"
           placeholder="Semua rekening"
+          multiple collapse-tags collapse-tags-tooltip
           clearable filterable allow-create default-first-option
+          :max-collapse-tags="1"
           style="width: 320px;"
         >
           <el-option

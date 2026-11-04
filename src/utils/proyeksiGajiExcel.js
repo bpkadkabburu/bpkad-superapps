@@ -22,30 +22,38 @@ import ExcelJS from 'exceljs'
 // versi yang tidak dikenalnya, supaya isian tidak pernah masuk ke kolom keliru.
 export const VERSI_META = 1
 
-const NAMA_BULAN = ['', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+// ---- Gaya bersama ----
+//
+// Konstanta warna/format dan fungsi gaya di bawah ini DIEKSPOR, bukan karena
+// berkas ini butuh, tapi supaya pembangun workbook lain di folder yang sama
+// (mis. proyeksiGajiKesiapanExcel.js) memakai definisi yang sama persis —
+// bukan salinan yang lama-lama menyimpang. Kalau warnanya diubah di sini,
+// seluruh berkas export ikut berubah bersamaan.
+
+export const NAMA_BULAN = ['', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
   'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
 
-const FMT_RP = '#,##0'
-const FMT_RP_MERAH = '#,##0;[Red]-#,##0' // kekurangan anggaran langsung terlihat
-const FMT_DESIMAL = '0.00'
+export const FMT_RP = '#,##0'
+export const FMT_RP_MERAH = '#,##0;[Red]-#,##0' // kekurangan anggaran langsung terlihat
+export const FMT_DESIMAL = '0.00'
 // Pergeseran selalu bertanda: merah = pagunya perlu ditambah, biru = pagunya ditarik.
-const FMT_PERGESERAN = '[Red]+#,##0;[Blue]-#,##0;"\u2014"'
+export const FMT_PERGESERAN = '[Red]+#,##0;[Blue]-#,##0;"\u2014"'
 
-const ABU = 'FFF2F4F7'
-const KUNING = 'FFFFF6D6' // kolom isian manual (Sim Gaji)
-const BIRU = 'FFEAF3FF'   // baris total
-const HIJAU = 'FFEAF7EC'  // sel angka turunan dari data
-const MERAH = 'FFFDE7E9'  // baris/sel yang anggarannya kurang
-const MERAH_TEKS = 'FFB42318'
-const AMBER = 'FFFDF3E3'      // baris yang pagunya perlu ditambah (Proyeksi Akhir)
-const AMBER_TEKS = 'FFB54708'
+export const ABU = 'FFF2F4F7'
+export const KUNING = 'FFFFF6D6' // kolom isian manual (Sim Gaji)
+export const BIRU = 'FFEAF3FF'   // baris total
+export const HIJAU = 'FFEAF7EC'  // sel angka turunan dari data
+export const MERAH = 'FFFDE7E9'  // baris/sel yang anggarannya kurang
+export const MERAH_TEKS = 'FFB42318'
+export const AMBER = 'FFFDF3E3'      // baris yang pagunya perlu ditambah (Proyeksi Akhir)
+export const AMBER_TEKS = 'FFB54708'
 const KUNCI = 'FFF4F5F7'      // dinas yang pagunya dikunci apa adanya
-const GOL_BAND = 'FFE7EDF7'   // baris pembatas blok golongan pegawai (PNS / PPPK)
-const GOL_SUB = 'FFF4F8FD'    // baris SUBTOTAL tiap golongan
+export const GOL_BAND = 'FFE7EDF7'   // baris pembatas blok golongan pegawai (PNS / PPPK)
+export const GOL_SUB = 'FFF4F8FD'    // baris SUBTOTAL tiap golongan
 
 // Nama sheet Excel: maks 31 karakter, tidak boleh memuat : \ / ? * [ ]
 // Nomor urut di depan menjamin nama tetap unik walau nama dinas terpotong.
-function namaSheet(no, nama) {
+export function namaSheet(no, nama) {
   const bersih = String(nama || '')
     .replace(/[\\/?*[\]:']/g, ' ')
     .replace(/\s+/g, ' ')
@@ -53,12 +61,12 @@ function namaSheet(no, nama) {
   return `${no}. ${bersih}`.slice(0, 31)
 }
 
-function garis() {
+export function garis() {
   const tipis = { style: 'thin', color: { argb: 'FFD0D5DD' } }
   return { top: tipis, left: tipis, bottom: tipis, right: tipis }
 }
 
-function styleHeader(row, kolomTerakhir) {
+export function styleHeader(row, kolomTerakhir) {
   row.font = { bold: true, size: 10 }
   row.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
   row.height = 32
@@ -69,7 +77,7 @@ function styleHeader(row, kolomTerakhir) {
   }
 }
 
-function styleBarisTotal(row, kolomTerakhir) {
+export function styleBarisTotal(row, kolomTerakhir) {
   row.font = { bold: true, size: 10 }
   for (let c = 1; c <= kolomTerakhir; c++) {
     const cell = row.getCell(c)
@@ -80,7 +88,7 @@ function styleBarisTotal(row, kolomTerakhir) {
 
 // Baris yang anggarannya tidak cukup diberi latar merah. Kolom isian manual
 // (Sim Gaji) dilewati supaya penanda "silakan diisi" warna kuningnya tetap ada.
-function tandaiKurang(row, kolomTerakhir, { lewati = [], kolomTeks = [] } = {}) {
+export function tandaiKurang(row, kolomTerakhir, { lewati = [], kolomTeks = [] } = {}) {
   for (let c = 1; c <= kolomTerakhir; c++) {
     if (lewati.includes(c)) continue
     row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: MERAH } }
@@ -93,7 +101,7 @@ function tandaiKurang(row, kolomTerakhir, { lewati = [], kolomTeks = [] } = {}) 
 
 // Di sheet Proyeksi Akhir yang ditandai bukan "kurang" melainkan arah pergeseran:
 // dinas yang pagunya perlu ditambah (kuning) dan dinas yang pagunya dikunci (abu).
-function tandaiTambah(row, kolomTerakhir, { lewati = [], kolomTeks = [] } = {}) {
+export function tandaiTambah(row, kolomTerakhir, { lewati = [], kolomTeks = [] } = {}) {
   for (let c = 1; c <= kolomTerakhir; c++) {
     // Kolom isian manual dilewati supaya penanda kuningnya tidak tertimpa.
     if (lewati.includes(c)) continue
@@ -113,11 +121,11 @@ function tandaiKunci(row, kolomTerakhir) {
   }
 }
 
-function angkaPersen(v) {
+export function angkaPersen(v) {
   return Number(v || 0).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'
 }
 
-const rupiah = (v) => 'Rp' + Math.round(Number(v) || 0).toLocaleString('id-ID')
+export const rupiah = (v) => 'Rp' + Math.round(Number(v) || 0).toLocaleString('id-ID')
 
 // Satu kalimat di kepala sheet yang menjelaskan apa yang terjadi pada pagu:
 // cukup, dipangkas bersama, atau memang kurang dan perlu tambahan anggaran.
@@ -141,7 +149,7 @@ function ceritaAkhir(akhir) {
 // Latar merah statis di atas mengikuti angka saat file dibuat. Aturan format
 // bersyarat ini yang membuat kolom Selisih tetap ikut berubah warna setelah
 // kolom Sim Gaji diisi dan Excel menghitung ulang.
-function aturanSelisihMerah(ws, kolom, dari, sampai) {
+export function aturanSelisihMerah(ws, kolom, dari, sampai) {
   if (sampai < dari) return
   ws.addConditionalFormatting({
     ref: `${kolom}${dari}:${kolom}${sampai}`,
@@ -158,7 +166,7 @@ function aturanSelisihMerah(ws, kolom, dari, sampai) {
   })
 }
 
-function judul(ws, teks, kolomTerakhir, opsi = {}) {
+export function judul(ws, teks, kolomTerakhir, opsi = {}) {
   const row = ws.addRow([teks])
   ws.mergeCells(row.number, 1, row.number, kolomTerakhir)
   row.getCell(1).font = {
@@ -174,7 +182,7 @@ function judul(ws, teks, kolomTerakhir, opsi = {}) {
 // Baris "label ... : nilai" — label di A:B (digabung), nilai di kolom C.
 // `opsi.fill`/`opsi.numFmt` dipakai kalau selnya bukan angka turunan biasa
 // (HIJAU) tapi isian yang boleh diubah pemakai (KUNING), mis. sel Acress global.
-function barisAngka(ws, label, nilai, keterangan, opsi = {}) {
+export function barisAngka(ws, label, nilai, keterangan, opsi = {}) {
   const row = ws.addRow([label, null, nilai, keterangan || null])
   ws.mergeCells(row.number, 1, row.number, 2)
   row.getCell(1).font = { bold: true, size: 10 }
@@ -200,7 +208,7 @@ function barisAngka(ws, label, nilai, keterangan, opsi = {}) {
 // Label golongan diambil dari kata terakhir nama rekening ("Belanja Gaji Pokok
 // PNS" -> PNS), sama seperti di backend — bukan dipaku ke kode, supaya golongan
 // baru atau kelompok rekening lain tetap terbaca benar.
-function petaLabelGolongan(data) {
+export function petaLabelGolongan(data) {
   const kata = new Map()
   const semua = [...(data.rekening || []), ...(data.skpd || []).flatMap(s => s.rekening || [])]
   for (const r of semua) {
@@ -223,7 +231,7 @@ function petaLabelGolongan(data) {
 // PPPK) tetap dikembalikan dengan `rows: []` — bukan hilang dari daftar — supaya
 // tiap sheet dinas selalu menampilkan blok PNS *dan* PPPK secara seragam, siap
 // dijadikan PDF tanpa dinas yang satu formatnya beda dari yang lain.
-function kelompokkanGolongan(rekening, peta, canonicalGol) {
+export function kelompokkanGolongan(rekening, peta, canonicalGol) {
   const map = new Map()
   for (const r of rekening || []) {
     const kunci = r.golongan || '-'
@@ -253,7 +261,7 @@ function barisBandGolonganDinas(ws, label, jumlahDinas, kolomTerakhir) {
   return barisBand(ws, label, `${jumlahDinas} dinas`, kolomTerakhir)
 }
 
-function barisBand(ws, label, keterangan, kolomTerakhir) {
+export function barisBand(ws, label, keterangan, kolomTerakhir) {
   const row = ws.addRow([label, keterangan])
   for (let c = 1; c <= kolomTerakhir; c++) {
     const cell = row.getCell(c)
@@ -266,7 +274,7 @@ function barisBand(ws, label, keterangan, kolomTerakhir) {
   return row
 }
 
-function styleSubtotal(row, kolomTerakhir) {
+export function styleSubtotal(row, kolomTerakhir) {
   row.font = { bold: true, size: 10 }
   for (let c = 1; c <= kolomTerakhir; c++) {
     const cell = row.getCell(c)
@@ -323,7 +331,7 @@ function bulanGolongan(skpd, kunci, bulanList) {
   return { perBulan, medianBulan, sp2d, bulanGajiTerbayar }
 }
 
-function labelSisaBulan(bulanTerakhir) {
+export function labelSisaBulan(bulanTerakhir) {
   if (!bulanTerakhir || bulanTerakhir >= 12) return 'sisa tahun'
   const dari = NAMA_BULAN[bulanTerakhir + 1]
   return `${dari}–${NAMA_BULAN[12]}`
