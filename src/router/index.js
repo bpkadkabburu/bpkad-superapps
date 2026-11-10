@@ -104,6 +104,12 @@ const routes = [
                 name: 'DpaDokumen',
                 component: () => import('../views/dpa/DokumenView.vue'),
                 meta: { requiresSkpdSync: true }
+              },
+              {
+                path: 'dinas',
+                name: 'DpaDinas',
+                component: () => import('../views/dpa/DinasView.vue'),
+                meta: { requiresSkpdSync: true }
               }
             ]
           },

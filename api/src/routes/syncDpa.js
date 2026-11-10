@@ -18,6 +18,9 @@ async function resolveTahunId(tahun) {
   return rows[0]?.id ?? null
 }
 
+// Kesalahan isi kiriman (bukan kesalahan server) — handler membalas 400.
+export class InputSalah extends Error {}
+
 // SIPD kadang mengirim angka sebagai string ("32", "1").
 function toInt(val) {
   if (val === null || val === undefined || val === '') return null
@@ -39,15 +42,11 @@ function teksAtauNull(val) {
 // id_tahap_sipd dan is_locked sengaja tidak disimpan. Kolom `aktif` TIDAK
 // ikut di-update: jadwal baru masuk aktif (default kolom), jadwal lama tetap
 // mengikuti setelan dari halaman DPA → Jadwal.
-export const syncJadwal = async (c) => {
-  const { data, tahun } = await c.req.json()
-  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
-  if (!Array.isArray(data) || data.length === 0)
-    return c.json({ error: 'data tidak boleh kosong' }, 400)
-
-  const tahun_id = await resolveTahunId(tahun)
-  if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
-
+//
+// Fungsi simpan* dipisah dari handler HTTP supaya skrip impor arsip
+// (scripts/impor-arsip-dpa.mjs) memakai logika yang persis sama. `q` boleh
+// pool atau koneksi yang sedang dalam transaksi.
+export async function simpanJadwal(q, tahun_id, data) {
   const rows = data.map((row, i) => ({
     urutan: i + 1,
     id_jadwal: toInt(row.id_jadwal),
@@ -56,10 +55,10 @@ export const syncJadwal = async (c) => {
     tahapan: teksAtauNull(row.tahapan),
   }))
   const tanpaId = rows.filter(r => r.id_jadwal === null).length
-  if (tanpaId) return c.json({ error: `${tanpaId} item jadwal tidak punya id_jadwal` }, 400)
+  if (tanpaId) throw new InputSalah(`${tanpaId} item jadwal tidak punya id_jadwal`)
 
   const now = new Date()
-  await db.query(
+  await q.query(
     `INSERT INTO sipd_jadwal (id, tahun_id, id_jadwal, id_jadwal_sipd, nama, tahapan, urutan, synced_at)
      VALUES ${rows.map(() => '(UUID(), ?, ?, ?, ?, ?, ?, ?)').join(', ')}
      ON DUPLICATE KEY UPDATE
@@ -70,8 +69,25 @@ export const syncJadwal = async (c) => {
        synced_at = VALUES(synced_at)`,
     rows.flatMap(r => [tahun_id, r.id_jadwal, r.id_jadwal_sipd, r.nama, r.tahapan, r.urutan, now])
   )
+  return { count: rows.length, synced_at: now }
+}
 
-  return c.json({ success: true, count: rows.length, synced_at: now.toISOString() })
+export const syncJadwal = async (c) => {
+  const { data, tahun } = await c.req.json()
+  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
+  if (!Array.isArray(data) || data.length === 0)
+    return c.json({ error: 'data tidak boleh kosong' }, 400)
+
+  const tahun_id = await resolveTahunId(tahun)
+  if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
+
+  try {
+    const hasil = await simpanJadwal(db, tahun_id, data)
+    return c.json({ success: true, count: hasil.count, synced_at: hasil.synced_at.toISOString() })
+  } catch (err) {
+    if (err instanceof InputSalah) return c.json({ error: err.message }, 400)
+    throw err
+  }
 }
 
 // Daftar jadwal untuk popup/modal extension: hanya yang aktif, urut seperti
@@ -108,15 +124,8 @@ function nipTertukar(row) {
 
 // Hapus semua baris tahun itu lalu isi ulang (bukan upsert per no_urut),
 // supaya anggota yang sudah dikeluarkan dari tim tidak tertinggal.
-export const syncTimTapd = async (c) => {
-  const { data, tahun } = await c.req.json()
-  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
-  if (!Array.isArray(data) || data.length === 0)
-    return c.json({ error: 'data tidak boleh kosong' }, 400)
-
-  const tahun_id = await resolveTahunId(tahun)
-  if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
-
+// Panggil di dalam transaksi — DELETE dan INSERT harus jadi satu.
+export async function simpanTimTapd(conn, tahun_id, data) {
   const now = new Date()
   const values = data.flatMap(row => {
     const tukar = nipTertukar(row)
@@ -130,15 +139,29 @@ export const syncTimTapd = async (c) => {
     ]
   })
 
+  await conn.query('DELETE FROM sipd_tim_tapd WHERE tahun_id = ?', [tahun_id])
+  await conn.query(
+    `INSERT INTO sipd_tim_tapd (id, tahun_id, no_urut, nama, nip, jabatan, synced_at)
+     VALUES ${data.map(() => '(UUID(), ?, ?, ?, ?, ?, ?)').join(', ')}`,
+    values
+  )
+  return { count: data.length, synced_at: now }
+}
+
+export const syncTimTapd = async (c) => {
+  const { data, tahun } = await c.req.json()
+  if (!tahun) return c.json({ error: 'tahun diperlukan' }, 400)
+  if (!Array.isArray(data) || data.length === 0)
+    return c.json({ error: 'data tidak boleh kosong' }, 400)
+
+  const tahun_id = await resolveTahunId(tahun)
+  if (!tahun_id) return c.json({ error: 'Tahun tidak ditemukan' }, 404)
+
   const conn = await db.getConnection()
+  let hasil
   try {
     await conn.beginTransaction()
-    await conn.query('DELETE FROM sipd_tim_tapd WHERE tahun_id = ?', [tahun_id])
-    await conn.query(
-      `INSERT INTO sipd_tim_tapd (id, tahun_id, no_urut, nama, nip, jabatan, synced_at)
-       VALUES ${data.map(() => '(UUID(), ?, ?, ?, ?, ?, ?)').join(', ')}`,
-      values
-    )
+    hasil = await simpanTimTapd(conn, tahun_id, data)
     await conn.commit()
   } catch (err) {
     await conn.rollback()
@@ -147,7 +170,7 @@ export const syncTimTapd = async (c) => {
     conn.release()
   }
 
-  return c.json({ success: true, count: data.length, synced_at: now.toISOString() })
+  return c.json({ success: true, count: hasil.count, synced_at: hasil.synced_at.toISOString() })
 }
 
 // Nama/NIP yang dikembalikan sudah yang benar (ditukar balik saat sinkron).
@@ -170,7 +193,7 @@ export const daftarTimTapd = async (c) => {
 // Dokumen DPA — satu endpoint, `jenis` menentukan tabel tujuan.
 // ---------------------------------------------------------------------------
 // Nama tabel masuk langsung ke SQL, jadi hanya boleh dari daftar ini.
-const TABEL_DPA = {
+export const TABEL_DPA = {
   persetujuan_depan: 'dpa_persetujuan_depan',
   skpd: 'dpa_skpd',
   pendapatan: 'dpa_pendapatan',
@@ -206,6 +229,36 @@ async function cariJadwal(tahun_id, body, rincian) {
   return { id: rows[0].id }
 }
 
+// Upsert satu dokumen. Kunci: (sipd_jadwal_id, id_skpd) untuk 5 jenis per
+// SKPD, ditambah (id_sub_skpd, id_sub_giat) untuk rincian belanja. Kiriman
+// ulang menimpa data dan synced_at, tidak menambah baris.
+export async function simpanDpa(q, d) {
+  const tabel = TABEL_DPA[d.jenis]
+  if (!tabel) throw new InputSalah(`jenis tidak dikenal: ${d.jenis}`)
+  const now = new Date()
+  const kolom = ['sipd_jadwal_id', 'id_skpd', 'kode_skpd', 'nama_skpd']
+  const nilai = [d.sipd_jadwal_id, d.id_skpd, teksAtauNull(d.kode_skpd), teksAtauNull(d.nama_skpd)]
+  if (d.jenis === 'rincian_belanja') {
+    kolom.push('id_sub_skpd', 'nama_sub_skpd', 'id_sub_giat', 'kode_sub_giat', 'nama_sub_giat')
+    nilai.push(
+      d.id_sub_skpd ?? 0, teksAtauNull(d.nama_sub_skpd),
+      d.id_sub_giat, teksAtauNull(d.kode_sub_giat), teksAtauNull(d.nama_sub_giat),
+    )
+  }
+  kolom.push('data', 'synced_at')
+  nilai.push(JSON.stringify(d.data), now)
+
+  // Kolom kunci (jadwal, skpd, sub skpd, sub giat) tidak perlu ikut di-update.
+  const diperbarui = kolom.filter(k => !['sipd_jadwal_id', 'id_skpd', 'id_sub_skpd', 'id_sub_giat'].includes(k))
+  await q.query(
+    `INSERT INTO ${tabel} (id, ${kolom.join(', ')})
+     VALUES (UUID(), ${kolom.map(() => '?').join(', ')})
+     ON DUPLICATE KEY UPDATE ${diperbarui.map(k => `${k} = VALUES(${k})`).join(', ')}`,
+    nilai
+  )
+  return { synced_at: now }
+}
+
 export const syncDpa = async (c) => {
   const body = await c.req.json()
   const { tahun, jenis, data } = body
@@ -225,31 +278,19 @@ export const syncDpa = async (c) => {
   const jadwal = await cariJadwal(tahun_id, body, rincian)
   if (jadwal.error) return c.json({ error: jadwal.error }, jadwal.status)
 
-  const now = new Date()
-  const kolom = ['sipd_jadwal_id', 'id_skpd', 'kode_skpd', 'nama_skpd']
-  const nilai = [jadwal.id, id_skpd, teksAtauNull(body.kode_skpd), teksAtauNull(body.nama_skpd)]
-  if (rincian) {
-    const id_sub_giat = toInt(body.id_sub_giat)
-    if (id_sub_giat === null) return c.json({ error: 'id_sub_giat diperlukan untuk rincian_belanja' }, 400)
-    kolom.push('id_sub_skpd', 'nama_sub_skpd', 'id_sub_giat', 'kode_sub_giat', 'nama_sub_giat')
-    nilai.push(
-      toInt(body.id_sub_skpd) ?? 0, teksAtauNull(body.nama_sub_skpd),
-      id_sub_giat, teksAtauNull(body.kode_sub_giat), teksAtauNull(body.nama_sub_giat),
-    )
-  }
-  kolom.push('data', 'synced_at')
-  nilai.push(JSON.stringify(data), now)
+  const id_sub_giat = toInt(body.id_sub_giat)
+  if (rincian && id_sub_giat === null)
+    return c.json({ error: 'id_sub_giat diperlukan untuk rincian_belanja' }, 400)
 
-  // Kolom kunci (jadwal, skpd, sub skpd, sub giat) tidak perlu ikut di-update.
-  const diperbarui = kolom.filter(k => !['sipd_jadwal_id', 'id_skpd', 'id_sub_skpd', 'id_sub_giat'].includes(k))
-  await db.query(
-    `INSERT INTO ${tabel} (id, ${kolom.join(', ')})
-     VALUES (UUID(), ${kolom.map(() => '?').join(', ')})
-     ON DUPLICATE KEY UPDATE ${diperbarui.map(k => `${k} = VALUES(${k})`).join(', ')}`,
-    nilai
-  )
+  const hasil = await simpanDpa(db, {
+    jenis, sipd_jadwal_id: jadwal.id, id_skpd,
+    kode_skpd: body.kode_skpd, nama_skpd: body.nama_skpd,
+    id_sub_skpd: toInt(body.id_sub_skpd), nama_sub_skpd: body.nama_sub_skpd,
+    id_sub_giat, kode_sub_giat: body.kode_sub_giat, nama_sub_giat: body.nama_sub_giat,
+    data,
+  })
 
-  return c.json({ success: true, jenis, sipd_jadwal_id: jadwal.id, synced_at: now.toISOString() })
+  return c.json({ success: true, jenis, sipd_jadwal_id: jadwal.id, synced_at: hasil.synced_at.toISOString() })
 }
 
 // ---------------------------------------------------------------------------

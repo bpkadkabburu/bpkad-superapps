@@ -156,13 +156,24 @@ try {
     rb.map(x => `${x.id_sub_giat}:v${x.data.versi}`).join(', '))
 
   // ---- Halaman Kelengkapan DPA (GET /api/dpa/*) ----
-  // Satu sub kegiatan asli dari referensi, supaya pencocokan (id_sub_skpd,
-  // id_sub_giat) ikut teruji — dua sub giat uji di atas tidak ada di referensi.
-  const [[subAsli]] = await db.query(
-    'SELECT id_sub_skpd, nama_sub_skpd, id_sub_giat, kode_sub_giat, nama_sub_giat FROM sub_kegiatan WHERE tahun_id = ? AND id_skpd = 416 LIMIT 1',
-    [ta.id]
-  )
-  if (subAsli) await kirim('/dpa', { ...rincian(subAsli.id_sub_giat, 1), ...subAsli })
+  // Target rincian = sub kegiatan bernilai di DPA Belanja jadwal yang sama.
+  // DPA Belanja uji: dua unit, kode sub kegiatan ...0001 muncul di keduanya
+  // (menguji pasangan lewat nama unit), dan satu sub kegiatan bernilai 0.
+  await kirim('/dpa', {
+    tahun: TAHUN, jenis: 'belanja', id_jadwal: 990063, id_skpd: 416, kode_skpd: 'K', nama_skpd: 'SKPD Uji',
+    data: { tipe_q: 'OLD', index: [
+      { kode_akun: '9.99.0.00.0.00.01.0001', uraian: 'Sub Uji', jumlah: 150 },
+      { kode_akun: '9', uraian: 'URUSAN UJI', jumlah: 150 },
+      { kode_akun: '9.99.01', uraian: 'PROGRAM UJI', jumlah: 150 },
+      { kode_akun: '9.99.01.2.01', uraian: 'Kegiatan uji', jumlah: 150 },
+      { kode_akun: '9.99.01.2.01.0001', uraian: 'Sub giat satu', jumlah: 100 },
+      { kode_akun: '9.99.01.2.01.0002', uraian: 'Sub giat dua', jumlah: 50 },
+      { kode_akun: '9.99.01.2.01.0003', uraian: 'Sub giat nol', jumlah: 0 },
+      { kode_akun: '9.99.0.00.0.00.01.0002', uraian: 'Sub Lain', jumlah: 70 },
+      { kode_akun: '9.99.01.2.01.0001', uraian: 'Sub giat satu', jumlah: 70 },
+    ] },
+  })
+  await kirim('/dpa', { ...rincian(3, 1), kode_sub_giat: '9.99.01.2.01.0001', nama_sub_giat: 'Sub giat satu' })
 
   const daftar = await ambil('/jadwal')
   const j63 = daftar.data.find(j => j.id_jadwal === 990063)
@@ -171,17 +182,42 @@ try {
 
   const kel = await ambil('/kelengkapan', { jadwal: j63.id })
   const setda = kel.data.find(r => r.id_skpd === 416)
+  const rbS = setda?.rincian_belanja
   cek('matriks: belanja ada, skpd belum', !!setda?.belanja && !setda?.skpd, `belanja ${setda?.belanja ? 'ada' : '-'}`)
-  cek('matriks: rincian dihitung terhadap referensi',
-    setda?.rincian_belanja.jumlah === (subAsli ? 3 : 2) && setda?.rincian_belanja.target > 0,
-    `${setda?.rincian_belanja.jumlah} / ${setda?.rincian_belanja.target}`)
+  cek('matriks: target dari DPA Belanja, sub kegiatan bernilai 0 tidak dihitung', rbS?.target === 3, `target ${rbS?.target}`)
+  cek('matriks: terpenuhi 1, dua rincian di luar DPA Belanja',
+    rbS?.terpenuhi === 1 && rbS?.diluar_target === 2 && rbS?.jumlah === 3, JSON.stringify(rbS))
+  const tanpaBelanja = kel.data.find(r => r.id_skpd !== 416)
+  cek('matriks: dinas tanpa DPA Belanja → target null', tanpaBelanja?.rincian_belanja.target === null)
   cek('matriks memuat semua dinas induk', kel.data.length >= daftar.jumlahSkpd, `${kel.data.length} baris, ${daftar.jumlahSkpd} induk`)
-  cek('kolom data JSON tidak ikut terkirim', !JSON.stringify(kel).includes('"versi"'))
+  cek('kolom data JSON tidak ikut terkirim', !JSON.stringify(kel).includes('"versi"') && !JSON.stringify(kel).includes('"index"'))
 
   const det = await ambil('/kelengkapan/rincian', { jadwal: j63.id, idSkpd: 416 })
-  const sudah = det.data.filter(d => d.synced_at).length
-  cek('detail rincian: sub kegiatan asli tercocok', sudah === (subAsli ? 1 : 0), `${sudah} dari ${det.data.length} sudah`)
-  cek('detail rincian: sub giat di luar referensi terdaftar', det.diluarReferensi.length === 2, `${det.diluarReferensi.length}`)
+  const sudah = det.data.filter(d => d.synced_at)
+  cek('detail rincian: dipasangkan ke unit yang namanya sama',
+    det.belanjaAda && det.data.length === 3 && sudah.length === 1 && sudah[0].nama_sub_skpd === 'Sub Uji' && sudah[0].nilai === 100,
+    sudah.map(d => `${d.nama_sub_skpd}:${d.kode_sub_giat}`).join(', '))
+  cek('detail rincian: rincian di luar DPA Belanja terdaftar', det.diluarTarget.length === 2, `${det.diluarTarget.length}`)
+  const detLain = await ambil('/kelengkapan/rincian', { jadwal: j63.id, idSkpd: tanpaBelanja.id_skpd })
+  cek('detail rincian: tanpa DPA Belanja → belanjaAda false', detLain.belanjaAda === false)
+
+  // Rincian sisa yang sub kegiatannya dianggarkan di jadwal lain (990065) tidak
+  // dihitung sebagai di luar DPA Belanja.
+  await kirim('/dpa', {
+    tahun: TAHUN, jenis: 'belanja', id_jadwal: 990065, id_skpd: 416, kode_skpd: 'K', nama_skpd: 'SKPD Uji',
+    data: { tipe_q: 'OLD', index: [
+      { kode_akun: '9.99.0.00.0.00.01.0001', uraian: 'Sub Uji', jumlah: 40 },
+      { kode_akun: '9.99.01.2.01.0009', uraian: 'Sub giat baru', jumlah: 40 },
+    ] },
+  })
+  await kirim('/dpa', { ...rincian(9, 1), kode_sub_giat: '9.99.01.2.01.0009', nama_sub_giat: 'Sub giat baru' })
+  const rbLain = (await ambil('/kelengkapan', { jadwal: j63.id })).data.find(r => r.id_skpd === 416)?.rincian_belanja
+  cek('matriks: rincian dari sub kegiatan jadwal lain tidak masuk +n',
+    rbLain?.jadwal_lain === 1 && rbLain?.diluar_target === 2 && rbLain?.jumlah === 4, JSON.stringify(rbLain))
+  const detJ = await ambil('/kelengkapan/rincian', { jadwal: j63.id, idSkpd: 416 })
+  cek('detail rincian: nama jadwal lain disebut',
+    detJ.jadwalLain.length === 1 && detJ.jadwalLain[0].jadwal_lain === 'UJI BARU' && detJ.diluarTarget.length === 2,
+    detJ.jadwalLain.map(r => `${r.kode_sub_giat} → ${r.jadwal_lain}`).join(', '))
 
   // ---- Status untuk modal download extension (GET /api/sync/dpa/status) ----
   const status = async (params) => {
@@ -196,7 +232,7 @@ try {
   r = await status({ tahun: TAHUN, jenis: 'rincian_belanja', id_skpd: 416 })
   const stRincian = r.json.data?.filter(d => d.id_jadwal_sipd === 990513) ?? []
   cek('status rincian per SKPD membawa id_sub_skpd + id_sub_giat',
-    stRincian.length === (subAsli ? 3 : 2) && stRincian.every(d => 'id_sub_skpd' in d && 'id_sub_giat' in d && !('data' in d)),
+    stRincian.length === 4 && stRincian.every(d => 'id_sub_skpd' in d && 'id_sub_giat' in d && !('data' in d)),
     `${stRincian.length} item`)
   r = await status({ tahun: TAHUN, jenis: 'rincian_belanja', id_skpd: 999999 })
   cek('status difilter id_skpd', r.status === 200 && r.json.data.length === 0)

@@ -9,7 +9,8 @@ import { useTahunStore } from '../../stores/tahun'
 // Jadwal DPA kiriman penat-extension (tombol Fetch Jadwal). id_jadwal dan
 // id_jadwal_sipd hanya kunci pencocokan dari SIPD, jadi tidak ditampilkan.
 // Saklar "Tampil di extension" menyembunyikan jadwal yang gagal / tidak dipakai
-// dari pilihan download; sinkron jadwal tidak menimpa setelan ini.
+// dari pilihan download; sinkron jadwal tidak menimpa setelan ini. Tanggal
+// jadwal diisi manual di sini (SIPD tidak mengirimkannya), juga tidak ditimpa.
 
 const JENIS = [
   { key: 'persetujuan_depan', label: 'Persetujuan' },
@@ -81,6 +82,23 @@ async function ubahAktif(j, aktif) {
   }
 }
 
+async function ubahTanggal(j, tanggal) {
+  const lama = j.tanggal
+  j.tanggal = tanggal || null
+  menyimpan.value = new Set(menyimpan.value).add(j.id)
+  try {
+    await api.put(`/dpa/jadwal/${j.id}/tanggal`, { tanggal: j.tanggal })
+    ElMessage.success(j.tanggal ? 'Tanggal jadwal disimpan' : 'Tanggal jadwal dikosongkan')
+  } catch (err) {
+    j.tanggal = lama
+    ElMessage.error(err.response?.data?.error || 'Gagal menyimpan tanggal')
+  } finally {
+    const sisa = new Set(menyimpan.value)
+    sisa.delete(j.id)
+    menyimpan.value = sisa
+  }
+}
+
 function lihatDokumen(j) {
   router.push({ name: 'DpaDokumen', params: { tahun: tahun.value }, query: { jadwal: j.id } })
 }
@@ -133,6 +151,21 @@ onMounted(muat)
               <el-tag v-if="!row.aktif" type="info" size="small" style="margin-left:6px;">nonaktif</el-tag>
             </div>
             <div style="font-size:11px; color:#909399;">{{ row.tahapan }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="Tanggal" width="150" align="center">
+          <template #default="{ row }">
+            <el-date-picker
+              :model-value="row.tanggal"
+              type="date"
+              value-format="YYYY-MM-DD"
+              format="DD MMM YYYY"
+              placeholder="Isi tanggal"
+              size="small"
+              style="width:130px;"
+              :disabled="menyimpan.has(row.id)"
+              @update:model-value="v => ubahTanggal(row, v)"
+            />
           </template>
         </el-table-column>
         <el-table-column label="Tampil di extension" width="130" align="center">

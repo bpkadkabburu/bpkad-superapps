@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useTahunStore } from '../stores/tahun'
-import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled, TrendCharts, PieChart, Histogram, Tickets, Wallet, Notebook, Calendar, UserFilled } from '@element-plus/icons-vue'
+import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled, TrendCharts, PieChart, Histogram, Tickets, Wallet, Notebook, Calendar, UserFilled, OfficeBuilding } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -13,6 +13,17 @@ const tahunStore = useTahunStore()
 const tahun = computed(() => route.params.tahun)
 const skpdSynced = computed(() => !!tahunStore.skpdSyncedAt)
 const activeMenu = computed(() => route.path)
+
+// Tahun anggaran yang sedang dibuka harus selalu kelihatan — gampang lupa
+// sedang di tahun mana, dan datanya mirip-mirip. Warnanya ikut posisi tahun
+// terhadap tahun berjalan, supaya membuka tahun lalu langsung terasa beda.
+const tahunBerjalan = new Date().getFullYear()
+const statusTahun = computed(() => {
+  const t = Number(tahun.value)
+  if (t < tahunBerjalan) return { warna: '#e6a23c', ket: 'Tahun lalu' }
+  if (t > tahunBerjalan) return { warna: '#409eff', ket: 'Tahun mendatang' }
+  return { warna: '#67c23a', ket: 'Tahun berjalan' }
+})
 
 function logout() {
   auth.logout()
@@ -55,8 +66,24 @@ function goHome() {
           style="font-weight: 700; font-size: 16px; color: #303133; cursor: pointer;"
           @click="goHome"
         >BPKAD Superapps</span>
-        <el-tag v-if="tahun" type="success" size="small">TA {{ tahun }}</el-tag>
       </div>
+
+      <!-- Di tengah header: header selalu menempel di atas, jadi tahun ini
+           terlihat di halaman mana pun tanpa memakan tempat di konten. -->
+      <el-tooltip v-if="tahun" :content="`${statusTahun.ket} — klik untuk ganti tahun`" placement="bottom">
+        <div
+          :style="{
+            position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+            background: statusTahun.warna, color: '#fff',
+            padding: '6px 20px', borderRadius: '999px',
+            fontSize: '16px', fontWeight: 700, letterSpacing: '0.3px',
+            cursor: 'pointer', whiteSpace: 'nowrap',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+          }"
+          @click="gantiTahun"
+        >Tahun Anggaran {{ tahun }}</div>
+      </el-tooltip>
+
       <div style="display: flex; align-items: center; gap: 12px;">
         <span style="font-size: 13px; color: #606266;">{{ auth.user?.username }}</span>
         <el-tag size="small" :type="auth.isSuperadmin ? 'danger' : 'info'">
@@ -131,6 +158,10 @@ function goHome() {
             <el-menu-item v-if="skpdSynced" :index="`/tahun/${tahun}/dpa/dokumen`">
               <el-icon><Document /></el-icon>
               <span>Dokumen</span>
+            </el-menu-item>
+            <el-menu-item v-if="skpdSynced" :index="`/tahun/${tahun}/dpa/dinas`">
+              <el-icon><OfficeBuilding /></el-icon>
+              <span>Dokumen per Dinas</span>
             </el-menu-item>
           </el-sub-menu>
 
