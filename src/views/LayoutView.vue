@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useTahunStore } from '../stores/tahun'
-import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled, TrendCharts, PieChart, Histogram, Tickets, Wallet, Notebook, Calendar, UserFilled, OfficeBuilding } from '@element-plus/icons-vue'
+import { HomeFilled, DataAnalysis, Document, FolderOpened, WarningFilled, TrendCharts, PieChart, Histogram, Tickets, Wallet, Notebook, Calendar, UserFilled, OfficeBuilding, CircleCheck } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -226,6 +226,11 @@ function goHome() {
             <el-menu-item :index="`/tahun/${tahun}/proyeksi-gaji`">
               <el-icon><Wallet /></el-icon>
               <span>Proyeksi Gaji</span>
+            </el-menu-item>
+
+            <el-menu-item :index="`/tahun/${tahun}/rancangan-pagu`">
+              <el-icon><CircleCheck /></el-icon>
+              <span>Cek Rancangan Pagu</span>
             </el-menu-item>
 
             <el-menu-item :index="`/tahun/${tahun}/efisiensi`">

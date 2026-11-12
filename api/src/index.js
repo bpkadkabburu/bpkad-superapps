@@ -19,6 +19,7 @@ import perbupApbdRoutes from './routes/perbupApbd.js'
 import efisiensiRoutes from './routes/efisiensi.js'
 import proyeksiGajiRoutes from './routes/proyeksiGaji.js'
 import simGajiRoutes from './routes/simGaji.js'
+import rancanganPaguRoutes from './routes/rancanganPagu.js'
 import apiKeysRoutes from './routes/apiKeys.js'
 import syncRoutes from './routes/sync.js'
 import mappingRoutes from './routes/mapping.js'
@@ -51,6 +52,7 @@ app.route('/api/perbup-apbd', perbupApbdRoutes)
 app.route('/api/efisiensi', efisiensiRoutes)
 app.route('/api/proyeksi-gaji', proyeksiGajiRoutes)
 app.route('/api/sim-gaji', simGajiRoutes)
+app.route('/api/rancangan-pagu', rancanganPaguRoutes)
 app.route('/api/mapping-pmk', mappingRoutes)
 app.route('/api/dpa', dpaRoutes)
 

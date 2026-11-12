@@ -57,10 +57,14 @@ function sheetGolongan(wb, m, opsi) {
   for (let c = K_AWAL; c <= K_AKHIR; c++) ws.getColumn(c).width = 17
   ws.getColumn(K_JUMLAH).width = 19
 
-  judul(ws, `CEK INPUTAN GAJI ${m.label} — TA ${opsi.tahun}`, K_JUMLAH, { size: 14, height: 22 })
-  judul(ws,
+  const judulDefault = `CEK INPUTAN GAJI ${m.label} — TA ${opsi.tahun}`
+  const subjudulDefault =
     `Hitungan = usulan versi ${opsi.sisi === 'sim' ? 'Sim Gaji' : 'Rumus'}, acress ${opsi.persenAcress}` +
-    ` • Inputan = ${opsi.namaBerkas} • diekspor ${opsi.waktu}`,
+    ` • Inputan = ${opsi.namaBerkas} • diekspor ${opsi.waktu}`
+  judul(ws, (opsi.judul || judulDefault).replace('{golongan}', m.label), K_JUMLAH, { size: 14, height: 22 })
+  judul(ws, opsi.subjudul
+    ? `${opsi.subjudul} • diekspor ${opsi.waktu}`
+    : subjudulDefault,
     K_JUMLAH, { bold: false, size: 10, color: 'FF667085' })
 
   // Sel toleransi — dirujuk mutlak oleh seluruh rumus PERBANDINGAN.
@@ -291,8 +295,8 @@ export async function buatWorkbookMatriksInputan(matriks, opsi) {
   return wb.xlsx.writeBuffer()
 }
 
-export function namaFileMatriksInputan(tahun) {
+export function namaFileMatriksInputan(tahun, label = 'Gaji') {
   const t = new Date()
   const tgl = `${t.getFullYear()}${String(t.getMonth() + 1).padStart(2, '0')}${String(t.getDate()).padStart(2, '0')}`
-  return `Cek_Inputan_Gaji_TA${tahun}_${tgl}.xlsx`
+  return `Cek_Inputan_${label}_TA${tahun}_${tgl}.xlsx`
 }

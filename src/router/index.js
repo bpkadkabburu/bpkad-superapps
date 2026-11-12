@@ -162,6 +162,12 @@ const routes = [
             meta: { requiresSkpdSync: true }
           },
           {
+            path: 'rancangan-pagu',
+            name: 'CekRancanganPagu',
+            component: () => import('../views/CekRancanganPaguView.vue'),
+            meta: { requiresSkpdSync: true }
+          },
+          {
             path: 'efisiensi',
             name: 'EfisiensiBelanja',
             component: () => import('../views/EfisiensiBelanjaView.vue'),
