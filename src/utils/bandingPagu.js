@@ -1,7 +1,7 @@
 import ExcelJS from 'exceljs'
 import { normalKodeRekening, subRincianRekening } from '../../api/src/utils/kodeRekening.js'
 import {
-  PREFIX_GAJI, PREFIX_TPP, kodeSintetisPppkPw, LABEL_KOMPONEN_PPPK_PW,
+  PREFIX_GAJI, AWALAN_TPP, kodeSintetisPppkPw, LABEL_KOMPONEN_PPPK_PW,
 } from '../../api/src/utils/kategoriPegawai.js'
 import api from './api.js'
 import { angkaRp, BerkasTidakDikenal } from './bandingInputan.js'
@@ -194,8 +194,8 @@ function cocokAwalan(kode, prefix) {
   const k = String(kode || '').trim()
   return k === prefix || k.startsWith(prefix + '.')
 }
-function kolomKodeRekening(prefix) {
-  return (h) => (KODE_REKENING_LIKE.test(h) && cocokAwalan(h, prefix))
+function kolomKodeRekening(daftarAwalan) {
+  return (h) => (KODE_REKENING_LIKE.test(h) && daftarAwalan.some(a => cocokAwalan(h, a)))
     ? { kodeRekening: h, namaRekening: h } : null
 }
 
@@ -219,8 +219,8 @@ const PETAKAN_KOLOM_PPPK_PW = (h) => {
 // paling banyak kolom yang menang) — jadi tidak bergantung nama sheet.
 
 const KATEGORI_PETAKAN = {
-  gaji: kolomKodeRekening(PREFIX_GAJI),
-  tpp: kolomKodeRekening(PREFIX_TPP),
+  gaji: kolomKodeRekening([PREFIX_GAJI]),
+  tpp: kolomKodeRekening(AWALAN_TPP),
   pppk_pw: PETAKAN_KOLOM_PPPK_PW,
 }
 const LABEL_KATEGORI = { gaji: 'Gaji', tpp: 'TPP', pppk_pw: 'PPPK Paruh Waktu' }

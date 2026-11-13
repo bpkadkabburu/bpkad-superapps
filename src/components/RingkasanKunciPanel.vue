@@ -14,16 +14,6 @@ const props = defineProps({
   daftar: { type: Array, required: true },
 })
 
-function formatRp(val) {
-  return 'Rp' + Number(val || 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })
-}
-function formatSelisih(val) {
-  const n = Number(val || 0)
-  if (!n) return '—'
-  return (n > 0 ? '+' : '−') + formatRp(Math.abs(n))
-}
-
-const LABEL_GOLONGAN = { '00001': 'PNS', '00002': 'PPPK' }
 
 // Kolom status: kategori yang punya golongan (Gaji, TPP) dipecah jadi dua
 // kolom PNS/PPPK sendiri-sendiri — supaya "PNS sudah sesuai tapi PPPK belum"
@@ -68,45 +58,31 @@ const statusOpd = computed(() => {
 })
 const jumlahBisaDikunci = computed(() => statusOpd.value.filter(o => o.bisaDikunci).length)
 
-// ---- Ringkasan teks siap-tempel (cuma yang bermasalah) ----
-const teksRingkasan = computed(() => {
-  const baris = [`*Cek Rancangan Pagu* — dibuat ${new Date().toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })}`]
+// ---- Ringkasan teks siap-tempel: dua daftar nama OPD saja, dari kolom
+// Kesimpulan — bisa dikunci = sudah sesuai rancangan pagu, sisanya belum.
+function buatTeks(judul, opd) {
+  return [
+    `*${judul}* (${opd.length})`,
+    ...(opd.length ? opd.map(o => `• ${o.namaSkpd}`) : ['• —']),
+  ].join('\n')
+}
 
-  for (const { label, banding, golongan } of props.daftar) {
-    baris.push('')
-    baris.push(`*${label}*`)
-    if (!banding) { baris.push('(belum ada rancangan tersimpan)'); continue }
-    const bermasalah = banding.baris.filter(b => b.status !== 'sesuai')
-    if (!bermasalah.length) { baris.push('Semua sesuai ✅'); continue }
-
-    const kelompok = new Map() // label grup (golongan atau '') -> Map(namaSkpd -> baris[])
-    for (const b of bermasalah) {
-      const g = golongan ? (LABEL_GOLONGAN[subRincianRekening(b.kodeRekening)] || 'Lainnya') : ''
-      if (!kelompok.has(g)) kelompok.set(g, new Map())
-      const perOpd = kelompok.get(g)
-      if (!perOpd.has(b.namaSkpd)) perOpd.set(b.namaSkpd, [])
-      perOpd.get(b.namaSkpd).push(b)
-    }
-    for (const [g, perOpd] of kelompok) {
-      if (g) baris.push(`_${g}_`)
-      for (const [namaSkpd, rows] of perOpd) {
-        baris.push(`• ${namaSkpd}`)
-        for (const b of rows) {
-          baris.push(`   - ${b.namaRekening}: sistem ${formatRp(b.usulan)}, rancangan ${formatRp(b.inputan)} (selisih ${formatSelisih(b.selisih)})`)
-        }
-      }
-    }
-  }
-  return baris.join('\n')
+const ringkasan = computed(() => {
+  const sudah = statusOpd.value.filter(o => o.bisaDikunci)
+  const belum = statusOpd.value.filter(o => !o.bisaDikunci)
+  return [
+    { kunci: 'ok', judul: 'Sudah sesuai rancangan pagu', teks: buatTeks('Sudah sesuai rancangan pagu', sudah) },
+    { kunci: 'bermasalah', judul: 'Belum sesuai rancangan pagu', teks: buatTeks('Belum sesuai rancangan pagu', belum) },
+  ]
 })
 
-const disalin = ref(false)
-async function salinRingkasan() {
+const disalin = ref(null)
+async function salinRingkasan({ kunci, teks }) {
   try {
-    await navigator.clipboard.writeText(teksRingkasan.value)
-    disalin.value = true
+    await navigator.clipboard.writeText(teks)
+    disalin.value = kunci
     ElMessage.success('Ringkasan disalin ke clipboard')
-    setTimeout(() => { disalin.value = false }, 2000)
+    setTimeout(() => { if (disalin.value === kunci) disalin.value = null }, 2000)
   } catch {
     ElMessage.error('Gagal menyalin — salin manual dari kotak teks di bawah.')
   }
@@ -149,18 +125,23 @@ async function salinRingkasan() {
       </el-table>
     </el-card>
 
-    <el-card>
-      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
-        <span style="font-size: 14px; font-weight: 700; color: #303133;">Ringkasan siap tempel</span>
-        <el-button type="primary" plain size="small" :icon="DocumentCopy" @click="salinRingkasan">
-          {{ disalin ? 'Tersalin!' : 'Salin' }}
-        </el-button>
-      </div>
-      <p style="margin: 0 0 10px; font-size: 12px; color: #909399; line-height: 1.6;">
-        Cuma memuat yang tidak sesuai — OPD yang semua rekeningnya sudah sesuai tidak disebut.
-      </p>
-      <el-input type="textarea" :model-value="teksRingkasan" readonly :rows="16"
-        style="font-family: monospace; font-size: 12px;" />
-    </el-card>
+    <el-row :gutter="16">
+      <el-col v-for="r in ringkasan" :key="r.kunci" :xs="24" :md="12" style="margin-bottom: 16px;">
+        <el-card style="height: 100%;">
+          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+            <span style="font-size: 14px; font-weight: 700;"
+              :style="{ color: r.kunci === 'ok' ? '#67c23a' : '#f56c6c' }">{{ r.judul }}</span>
+            <el-button type="primary" plain size="small" :icon="DocumentCopy" @click="salinRingkasan(r)">
+              {{ disalin === r.kunci ? 'Tersalin!' : 'Salin' }}
+            </el-button>
+          </div>
+          <p style="margin: 0 0 10px; font-size: 12px; color: #909399; line-height: 1.6;">
+            Siap tempel.
+          </p>
+          <el-input type="textarea" :model-value="r.teks" readonly :rows="16"
+            style="font-family: monospace; font-size: 12px;" />
+        </el-card>
+      </el-col>
+    </el-row>
   </div>
 </template>

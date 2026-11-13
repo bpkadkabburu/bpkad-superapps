@@ -17,6 +17,12 @@ export const LABEL_JENIS_TPP = {
   '005': 'Pertimbangan Objektif Lainnya',
 }
 
+// Kategori TPP dibatasi ke kriteria di atas saja (5.1.01.02.001–005). Rincian
+// objek lain di bawah 5.1.01.02 BUKAN TPP — mis. 5.1.01.02.006.00074 Tunjangan
+// Khusus Dokter Spesialis — dan tidak ada di rancangan TPP, jadi kalau ikut
+// terambil akan selalu tampil tidak sesuai.
+export const AWALAN_TPP = Object.keys(LABEL_JENIS_TPP).map(j => `${PREFIX_TPP}.${j}`)
+
 export function labelJenisTpp(kodeRekening) {
   const jenis = rincianObjekRekening(kodeRekening)
   return (jenis && LABEL_JENIS_TPP[jenis]) || null
@@ -35,9 +41,13 @@ export function isPppkParuhWaktu(namaRekening) {
 export function jenisKomponenPppkPw(namaRekening) {
   const nama = String(namaRekening || '').toLowerCase()
   if (!/paruh\s*waktu/.test(nama)) return null
-  if (nama.includes('kesehatan')) return 'bpjs_kesehatan'
+  // Jangan cocokkan kata "kesehatan" saja: rekening jabatan tenaga kesehatan
+  // juga memuatnya ("…jasa PPPK Paruh Waktu pada jabatan tenaga kesehatan",
+  // "…Kecelakaan Kerja … Jabatan Tenaga Kesehatan"), sehingga gaji/JKK/JKM
+  // nakes ikut terbaca sebagai BPJS. Cek frasa iurannya secara spesifik.
   if (nama.includes('kecelakaan')) return 'jkk'
   if (nama.includes('kematian')) return 'jkm'
+  if (/jaminan\s+kesehatan/.test(nama)) return 'bpjs_kesehatan'
   return 'gaji'
 }
 

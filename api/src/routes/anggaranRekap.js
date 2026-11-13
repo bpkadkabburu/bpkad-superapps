@@ -2,9 +2,9 @@ import { Hono } from 'hono'
 import db from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { syncAnggaran } from './sync.js'
-import { klausaAwalanRekening } from '../utils/kodeRekening.js'
+import { klausaAwalanRekeningBanyak } from '../utils/kodeRekening.js'
 import {
-  PREFIX_GAJI, PREFIX_TPP, jenisKomponenPppkPw,
+  PREFIX_GAJI, AWALAN_TPP, jenisKomponenPppkPw,
   kodeSintetisPppkPw, LABEL_KOMPONEN_PPPK_PW,
 } from '../utils/kategoriPegawai.js'
 
@@ -63,7 +63,7 @@ router.get('/rekap-sumber-dana', async (c) => {
 // Perencanaan, dst), masing-masing punya baris pagu sendiri di anggaran_rekap.
 // Mengelompokkan di level kode_skpd akan melebur semua Bagian itu jadi satu
 // baris dan menyembunyikan rinciannya.
-const KATEGORI_PREFIX = { gaji: PREFIX_GAJI, tpp: PREFIX_TPP }
+const KATEGORI_AWALAN = { gaji: [PREFIX_GAJI], tpp: AWALAN_TPP }
 
 router.get('/rekap-pegawai', async (c) => {
   const tahun = c.req.query('tahun')
@@ -102,7 +102,7 @@ router.get('/rekap-pegawai', async (c) => {
     return c.json({ data: [...peta.values()] })
   }
 
-  const { sql, params } = klausaAwalanRekening('ar.kode_rekening', KATEGORI_PREFIX[kategori])
+  const { sql, params } = klausaAwalanRekeningBanyak('ar.kode_rekening', KATEGORI_AWALAN[kategori])
   const [rows] = await db.query(
     `SELECT ar.kode_sub_unit AS kodeSkpd, ar.nama_sub_unit AS namaSkpd,
             ar.kode_rekening AS kodeRekening, ar.nama_rekening AS namaRekening,
